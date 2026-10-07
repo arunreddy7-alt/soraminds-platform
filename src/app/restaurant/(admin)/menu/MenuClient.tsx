@@ -65,6 +65,15 @@ function slugify(value: string) {
     .replace(/^-+|-+$/g, "");
 }
 
+function normalizeCategory(value: unknown) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\u00A0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 function formatCurrency(value: number) {
   return `₹${Number(value || 0).toLocaleString("en-IN")}`;
 }
@@ -1967,6 +1976,10 @@ function VariantsModal({
    BULK IMPORT
 ============================================================ */
 
+/* ============================================================
+   BULK IMPORT
+============================================================ */
+
 function BulkImportModal({
   categories,
   restaurantId,
@@ -1980,69 +1993,325 @@ function BulkImportModal({
   onClose: () => void;
   onComplete: () => Promise<void>;
 }) {
-  const [file, setFile] =
-    useState<File | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [imageZip, setImageZip] = useState<File | null>(null);
 
-  const [imageZip, setImageZip] =
-    useState<File | null>(null);
+  const [rows, setRows] = useState<ImportRow[]>([]);
 
-  const [rows, setRows] = useState<ImportRow[]>(
-    []
-  );
+  const [mode, setMode] = useState<
+    "PRODUCTS" | "IMAGES"
+  >("PRODUCTS");
+
+  const [imageRows, setImageRows] = useState<
+    {
+      fileName: string;
+      matchedProduct: Product | null;
+    }[]
+  >([]);
 
   const [step, setStep] = useState<
-    "UPLOAD" | "REVIEW" | "ADDING" | "DONE"
+    | "UPLOAD"
+    | "REVIEW"
+    | "IMAGE_REVIEW"
+    | "ADDING"
+    | "DONE"
   >("UPLOAD");
 
   const [duplicateAction, setDuplicateAction] =
     useState<"SKIP" | "CREATE">("SKIP");
 
-  const [message, setMessage] =
-    useState("");
+  const [message, setMessage] = useState("");
 
-    function downloadTemplate() {
-  const templateData = [
-    {
-      name: "Chicken Biryani",
-      description:
-        "Chicken biryani with basmati rice",
-      category: "Main Course",
-      price: 280,
-      mrp: 320,
-      vegetarian: false,
-      available: true,
-      image: "chicken-biryani.jpg",
-    },
-  ];
+  /* ============================================================
+     IMAGE ONLY — REVIEW ZIP
+  ============================================================ */
 
-  const worksheet =
-    XLSX.utils.json_to_sheet(templateData);
+  async function reviewImagesOnly(selectedFile: File) {
+    setImageZip(selectedFile);
+    setMessage("");
 
-  worksheet["!cols"] = [
-    { wch: 24 },
-    { wch: 42 },
-    { wch: 20 },
-    { wch: 12 },
-    { wch: 12 },
-    { wch: 14 },
-    { wch: 14 },
-    { wch: 28 },
-  ];
+    try {
+      const zip = await JSZip.loadAsync(
+        await selectedFile.arrayBuffer()
+      );
 
-  const workbook =
-    XLSX.utils.book_new();
+      const imageFiles = Object.values(zip.files).filter(
+        (zipFile) =>
+          !zipFile.dir &&
+          /\.(jpg|jpeg|png|webp)$/i.test(
+            zipFile.name
+          )
+      );
 
-  XLSX.utils.book_append_sheet(
-    workbook,
-    worksheet,
-    "Products"
-  );
+      if (imageFiles.length === 0) {
+        setMessage(
+          "No JPG, JPEG, PNG or WEBP images were found in the ZIP."
+        );
+        return;
+      }
 
-  XLSX.writeFile(
-    workbook,
-    "menu-import-template.xlsx"
-  );
-}
+      const review = imageFiles.map((zipFile) => {
+        const fileName =
+          zipFile.name
+            .split("/")
+            .pop()
+            ?.trim() || "";
+
+        const withoutExtension = fileName.replace(
+          /\.[^/.]+$/,
+          ""
+        );
+
+        const normalizedFile = slugify(
+          withoutExtension
+        );
+
+        const matchedProduct =
+          existingProducts.find(
+            (product) =>
+              product.is_active &&
+              slugify(product.name) ===
+                normalizedFile
+          ) || null;
+
+        return {
+          fileName,
+          matchedProduct,
+        };
+      });
+
+      setImageRows(review);
+      setStep("IMAGE_REVIEW");
+    } catch (error) {
+      console.error(
+        "Image ZIP review failed:",
+        error
+      );
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not read the image ZIP."
+      );
+    }
+  }
+
+  /* ============================================================
+     IMAGE ONLY — UPLOAD
+  ============================================================ */
+
+  async function uploadImagesOnly() {
+    if (!restaurantId || !imageZip) {
+      setMessage(
+        "Restaurant or image ZIP is missing."
+      );
+      return;
+    }
+
+    const matchedRows = imageRows.filter(
+      (row) =>
+        row.matchedProduct !== null
+    );
+
+    if (matchedRows.length === 0) {
+      setMessage(
+        "No images could be matched to existing products."
+      );
+      return;
+    }
+
+    setStep("ADDING");
+    setMessage("");
+
+    const supabase = createClient();
+
+    try {
+      const zip = await JSZip.loadAsync(
+        await imageZip.arrayBuffer()
+      );
+
+      let uploaded = 0;
+
+      for (const row of matchedRows) {
+        const product =
+          row.matchedProduct;
+
+        if (!product) {
+          continue;
+        }
+
+        const zipFile =
+          Object.values(zip.files).find(
+            (item) => {
+              const name =
+                item.name
+                  .split("/")
+                  .pop()
+                  ?.trim() || "";
+
+              return (
+                name === row.fileName
+              );
+            }
+          );
+
+        if (!zipFile) {
+          continue;
+        }
+
+        const extension =
+          row.fileName
+            .split(".")
+            .pop()
+            ?.toLowerCase() || "jpg";
+
+        const storagePath =
+          `restaurants/${restaurantId}/products/${product.id}/${crypto.randomUUID()}.${extension}`;
+
+        const imageBlob =
+          await zipFile.async("blob");
+
+        const contentType =
+          extension === "jpg" ||
+          extension === "jpeg"
+            ? "image/jpeg"
+            : extension === "png"
+              ? "image/png"
+              : "image/webp";
+
+        const {
+          error: uploadError,
+        } = await supabase.storage
+          .from("menu-images")
+          .upload(
+            storagePath,
+            imageBlob,
+            {
+              contentType,
+              cacheControl: "3600",
+              upsert: false,
+            }
+          );
+
+        if (uploadError) {
+          throw uploadError;
+        }
+
+        const {
+          data: publicUrlData,
+        } = supabase.storage
+          .from("menu-images")
+          .getPublicUrl(
+            storagePath
+          );
+
+        const {
+          error: updateError,
+        } = await supabase
+          .from("products")
+          .update({
+            image_url:
+              publicUrlData.publicUrl,
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq("id", product.id)
+          .eq(
+            "restaurant_id",
+            restaurantId
+          );
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        uploaded++;
+      }
+
+      if (uploaded === 0) {
+        setMessage(
+          "No images were uploaded."
+        );
+        setStep("IMAGE_REVIEW");
+        return;
+      }
+
+      setMessage(
+        `${uploaded} image${
+          uploaded === 1 ? "" : "s"
+        } uploaded successfully.`
+      );
+
+      setStep("DONE");
+    } catch (error) {
+      console.error(
+        "Image upload failed:",
+        error
+      );
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Image upload failed."
+      );
+
+      setStep("IMAGE_REVIEW");
+    }
+  }
+
+  /* ============================================================
+     TEMPLATE
+  ============================================================ */
+
+  function downloadTemplate() {
+    const templateData = [
+      {
+        name: "Chicken Biryani",
+        description:
+          "Chicken biryani with basmati rice",
+        category: "Main Course",
+        price: 280,
+        mrp: 320,
+        vegetarian: false,
+        available: true,
+        image: "chicken-biryani.jpg",
+      },
+    ];
+
+    const worksheet =
+      XLSX.utils.json_to_sheet(
+        templateData
+      );
+
+    worksheet["!cols"] = [
+      { wch: 24 },
+      { wch: 42 },
+      { wch: 20 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 14 },
+      { wch: 28 },
+    ];
+
+    const workbook =
+      XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      "Products"
+    );
+
+    XLSX.writeFile(
+      workbook,
+      "menu-import-template.xlsx"
+    );
+  }
+
+  /* ============================================================
+     PARSE CSV / XLSX
+  ============================================================ */
 
   async function parseImportFile(
     selectedFile: File
@@ -2050,35 +2319,37 @@ function BulkImportModal({
     const buffer =
       await selectedFile.arrayBuffer();
 
-    const workbook = XLSX.read(buffer, {
-      type: "array",
-    });
+    const workbook = XLSX.read(
+      buffer,
+      {
+        type: "array",
+      }
+    );
 
     const sheet =
       workbook.Sheets[
         workbook.SheetNames[0]
       ];
 
-    const data = XLSX.utils.sheet_to_json<
-      Record<string, unknown>
-    >(sheet, {
-      defval: "",
-    });
+    const data =
+      XLSX.utils.sheet_to_json<
+        Record<string, unknown>
+      >(sheet, {
+        defval: "",
+      });
 
-    const categoryNames = new Set(
-      categories.map((category) =>
-        category.name.toLowerCase()
-      )
-    );
+    const existingNames =
+      new Set(
+        existingProducts.map(
+          (product) =>
+            product.name
+              .trim()
+              .toLowerCase()
+        )
+      );
 
-    const existingNames = new Set(
-      existingProducts.map((product) =>
-        product.name.toLowerCase()
-      )
-    );
-
-    const parsed: ImportRow[] = data.map(
-      (row) => {
+    const parsed: ImportRow[] =
+      data.map((row) => {
         const name = String(
           row.name ||
             row.Name ||
@@ -2087,17 +2358,32 @@ function BulkImportModal({
             ""
         ).trim();
 
-        const description = String(
-          row.description ||
-            row.Description ||
-            ""
-        ).trim();
+        const description =
+          String(
+            row.description ||
+              row.Description ||
+              ""
+          ).trim();
 
-        const category = String(
+        const rawCategory =
           row.category ||
-            row.Category ||
-            ""
-        ).trim();
+          row.Category ||
+          row["Category Name"] ||
+          row["category name"] ||
+          "";
+
+        const category =
+          String(rawCategory)
+            .normalize("NFKC")
+            .replace(
+              /\u00A0/g,
+              " "
+            )
+            .replace(
+              /\s+/g,
+              " "
+            )
+            .trim();
 
         const price = Number(
           row.price ||
@@ -2106,35 +2392,41 @@ function BulkImportModal({
         );
 
         const rawMrp =
-          row.mrp || row.MRP || "";
+          row.mrp ||
+          row.MRP ||
+          "";
 
         const mrp = rawMrp
           ? Number(rawMrp)
           : null;
 
-        const rawVegetarian = String(
-          row.vegetarian ||
-            row.Vegetarian ||
-            row.is_vegetarian ||
-            ""
-        ).toLowerCase();
+        const rawVegetarian =
+          String(
+            row.vegetarian ||
+              row.Vegetarian ||
+              row.is_vegetarian ||
+              ""
+          ).toLowerCase();
 
         const vegetarian =
           rawVegetarian === "true" ||
           rawVegetarian === "yes" ||
           rawVegetarian === "1";
 
-        const rawAvailable = String(
-          row.available ||
-            row.Available ||
-            row.is_available ||
-            "true"
-        ).toLowerCase();
+        const rawAvailable =
+          String(
+            row.available ||
+              row.Available ||
+              row.is_available ||
+              "true"
+          ).toLowerCase();
 
         const available =
           !(
-            rawAvailable === "false" ||
-            rawAvailable === "no" ||
+            rawAvailable ===
+              "false" ||
+            rawAvailable ===
+              "no" ||
             rawAvailable === "0"
           );
 
@@ -2148,21 +2440,23 @@ function BulkImportModal({
         let error = "";
 
         if (!name) {
-          error = "Product name is required.";
+          error =
+            "Product name is required.";
         } else if (!category) {
-          error = "Category is required.";
+          error =
+            "Category is required.";
         } else if (
-          !categoryNames.has(
-            category.toLowerCase()
-          )
+          !price ||
+          price <= 0
         ) {
           error =
-            "Category does not exist.";
-        } else if (!price || price <= 0) {
-          error = "Valid price is required.";
+            "Valid price is required.";
         } else if (
-          duplicateAction === "SKIP" &&
-          existingNames.has(name.toLowerCase())
+          duplicateAction ===
+            "SKIP" &&
+          existingNames.has(
+            name.toLowerCase()
+          )
         ) {
           error =
             "Product already exists.";
@@ -2180,8 +2474,7 @@ function BulkImportModal({
           valid: !error,
           error,
         };
-      }
-    );
+      });
 
     setRows(parsed);
     setStep("REVIEW");
@@ -2196,8 +2489,13 @@ function BulkImportModal({
     }
 
     setMessage("");
+
     await parseImportFile(file);
   }
+
+  /* ============================================================
+     ADD PRODUCTS TO MENU
+  ============================================================ */
 
   async function addToMenu() {
     if (!restaurantId) {
@@ -2207,9 +2505,10 @@ function BulkImportModal({
       return;
     }
 
-    const validRows = rows.filter(
-      (row) => row.valid
-    );
+    const validRows =
+      rows.filter(
+        (row) => row.valid
+      );
 
     if (validRows.length === 0) {
       setMessage(
@@ -2221,641 +2520,1829 @@ function BulkImportModal({
     setStep("ADDING");
     setMessage("");
 
-    const supabase = createClient();
+    const supabase =
+      createClient();
 
     try {
-      for (const row of validRows) {
-        const category =
-          categories.find(
-            (item) =>
-              item.name.toLowerCase() ===
-              row.category.toLowerCase()
+      /* -----------------------------------------
+         1. EXISTING CATEGORIES
+      ----------------------------------------- */
+
+      const {
+        data: existingCategories,
+        error:
+          categoryLoadError,
+      } = await supabase
+        .from("categories")
+        .select(
+          "id, name, sort_order"
+        )
+        .eq(
+          "restaurant_id",
+          restaurantId
+        );
+
+      if (categoryLoadError) {
+        throw categoryLoadError;
+      }
+
+      const categoryMap =
+        new Map<
+          string,
+          number
+        >();
+
+      (
+        existingCategories ||
+        []
+      ).forEach(
+        (category) => {
+          categoryMap.set(
+            normalizeCategory(
+              category.name
+            ),
+            category.id
+          );
+        }
+      );
+
+      /* -----------------------------------------
+         2. UNIQUE CATEGORIES
+      ----------------------------------------- */
+
+      const uniqueCategories =
+        Array.from(
+          new Map(
+            validRows.map(
+              (row) => [
+                normalizeCategory(
+                  row.category
+                ),
+                row.category.trim(),
+              ]
+            )
+          ).values()
+        );
+
+      /* -----------------------------------------
+         3. CREATE MISSING CATEGORIES
+      ----------------------------------------- */
+
+      const newCategories =
+        uniqueCategories.filter(
+          (categoryName) =>
+            !categoryMap.has(
+              normalizeCategory(
+                categoryName
+              )
+            )
+        );
+
+      if (
+        newCategories.length >
+        0
+      ) {
+        const now =
+          new Date().toISOString();
+
+        const startingSortOrder =
+          (
+            existingCategories ||
+            []
+          ).reduce(
+            (max, category) =>
+              Math.max(
+                max,
+                Number(
+                  category.sort_order ||
+                    0
+                )
+              ),
+            -1
+          ) + 1;
+
+        const categoryRows =
+          newCategories.map(
+            (
+              categoryName,
+              index
+            ) => ({
+              restaurant_id:
+                restaurantId,
+              name:
+                categoryName,
+              slug:
+                slugify(
+                  categoryName
+                ),
+              description:
+                null,
+              image_url:
+                null,
+              sort_order:
+                startingSortOrder +
+                index,
+              is_active:
+                true,
+              created_at:
+                now,
+              updated_at:
+                now,
+            })
           );
 
-        if (!category) {
-          continue;
+        const {
+          data:
+            insertedCategories,
+          error:
+            categoryInsertError,
+        } =
+          await supabase
+            .from(
+              "categories"
+            )
+            .insert(
+              categoryRows
+            )
+            .select(
+              "id, name"
+            );
+
+        if (
+          categoryInsertError
+        ) {
+          throw categoryInsertError;
         }
 
-        const { error } = await supabase
-          .from("products")
-          .insert({
-            restaurant_id: restaurantId,
-            category_id: category.id,
-            name: row.name,
-            slug: slugify(row.name),
-            description:
-              row.description || null,
-            price: row.price,
-            mrp: row.mrp,
-            image_url:
-              row.image || null,
-            is_vegetarian:
-              row.vegetarian,
-            is_available:
-              row.available,
-            is_active: true,
-          });
+        (
+          insertedCategories ||
+          []
+        ).forEach(
+          (category) => {
+            categoryMap.set(
+              normalizeCategory(
+                category.name
+              ),
+              category.id
+            );
+          }
+        );
+      }
 
-        if (error) {
-          console.error(
-            `Failed to add ${row.name}`,
-            error
+      /* -----------------------------------------
+         4. OPTIONAL ZIP IMAGES
+      ----------------------------------------- */
+
+      const imageMap =
+        new Map<
+          string,
+          string
+        >();
+
+      if (imageZip) {
+        const zip =
+          await JSZip.loadAsync(
+            await imageZip.arrayBuffer()
+          );
+
+        const imageFiles =
+          Object.values(
+            zip.files
+          ).filter(
+            (zipFile) =>
+              !zipFile.dir &&
+              /\.(jpg|jpeg|png|webp)$/i.test(
+                zipFile.name
+              )
+          );
+
+        for (
+          const imageFile of imageFiles
+        ) {
+          const originalName =
+            imageFile.name
+              .split("/")
+              .pop()
+              ?.trim() || "";
+
+          const extension =
+            originalName
+              .split(".")
+              .pop()
+              ?.toLowerCase() ||
+            "jpg";
+
+          const storagePath =
+            `restaurants/${restaurantId}/products/${crypto.randomUUID()}.${extension}`;
+
+          const imageBlob =
+            await imageFile.async(
+              "blob"
+            );
+
+          const contentType =
+            extension === "jpg" ||
+            extension === "jpeg"
+              ? "image/jpeg"
+              : extension === "png"
+                ? "image/png"
+                : "image/webp";
+
+          const {
+            error:
+              uploadError,
+          } =
+            await supabase.storage
+              .from(
+                "menu-images"
+              )
+              .upload(
+                storagePath,
+                imageBlob,
+                {
+                  contentType,
+                  cacheControl:
+                    "3600",
+                  upsert:
+                    false,
+                }
+              );
+
+          if (uploadError) {
+            throw uploadError;
+          }
+
+          const {
+            data:
+              publicUrlData,
+          } =
+            supabase.storage
+              .from(
+                "menu-images"
+              )
+              .getPublicUrl(
+                storagePath
+              );
+
+          imageMap.set(
+            originalName.toLowerCase(),
+            publicUrlData.publicUrl
           );
         }
       }
 
-      /*
-       * ZIP is intentionally inspected during Review.
-       * Actual Supabase Storage mapping will be
-       * connected once the restaurant image bucket
-       * is configured.
-       */
-      if (imageZip) {
-        const zip = await JSZip.loadAsync(
-          await imageZip.arrayBuffer()
-        );
+      /* -----------------------------------------
+         5. CREATE PRODUCTS
+      ----------------------------------------- */
 
-        const imageNames = Object.keys(
-          zip.files
-        ).filter(
-          (name) =>
-            !zip.files[name].dir &&
-            /\.(jpg|jpeg|png|webp)$/i.test(
-              name
-            )
-        );
+      const now =
+        new Date().toISOString();
 
-        console.log(
-          "Images available in ZIP:",
-          imageNames
-        );
+      const productRows =
+        validRows
+          .map((row) => {
+            const categoryId =
+              categoryMap.get(
+                normalizeCategory(
+                  row.category
+                )
+              );
+
+            if (!categoryId) {
+              return null;
+            }
+
+            let imageUrl:
+              | string
+              | null = null;
+
+            if (
+              imageZip &&
+              row.image
+            ) {
+              const imageFileName =
+                row.image
+                  .split("/")
+                  .pop()
+                  ?.trim()
+                  .toLowerCase() ||
+                "";
+
+              imageUrl =
+                imageMap.get(
+                  imageFileName
+                ) || null;
+            }
+
+            return {
+              restaurant_id:
+                restaurantId,
+              category_id:
+                categoryId,
+              name:
+                row.name.trim(),
+              slug:
+                slugify(
+                  row.name
+                ),
+              description:
+                row.description ||
+                null,
+              price:
+                row.price,
+              mrp:
+                row.mrp,
+              image_url:
+                imageUrl,
+              is_vegetarian:
+                row.vegetarian,
+              is_available:
+                row.available,
+              is_active:
+                true,
+              created_at:
+                now,
+              updated_at:
+                now,
+            };
+          })
+          .filter(
+            (
+              product
+            ): product is NonNullable<
+              typeof product
+            > =>
+              product !== null
+          );
+
+      /* -----------------------------------------
+         6. INSERT PRODUCTS
+      ----------------------------------------- */
+
+      if (
+        productRows.length >
+        0
+      ) {
+        const {
+          error:
+            productInsertError,
+        } =
+          await supabase
+            .from("products")
+            .insert(
+              productRows
+            );
+
+        if (
+          productInsertError
+        ) {
+          throw productInsertError;
+        }
       }
 
       setStep("DONE");
     } catch (error) {
-      console.error(error);
+      console.error(
+        "Bulk import failed:",
+        error
+      );
 
       setMessage(
-        "Some products could not be added."
+        error instanceof Error
+          ? error.message
+          : "Bulk import failed."
       );
 
       setStep("REVIEW");
     }
   }
 
-  const validCount = rows.filter(
-    (row) => row.valid
-  ).length;
+  const validCount =
+    rows.filter(
+      (row) => row.valid
+    ).length;
 
   const invalidCount =
-    rows.length - validCount;
+    rows.length -
+    validCount;
+
+  const matchedImageCount =
+    imageRows.filter(
+      (row) =>
+        row.matchedProduct !== null
+    ).length;
+
+  const unmatchedImageCount =
+    imageRows.length -
+    matchedImageCount;
 
   return (
-    <Modal onClose={onClose} wide>
+    <Modal
+      onClose={onClose}
+      wide
+    >
       <ModalHeader
         title="Bulk Import"
         onClose={onClose}
       />
 
-      <div style={{ padding: "22px" }}>
-        {step === "UPLOAD" && (
-          <>
-          <div
-  style={{
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "15px",
-    padding: "14px 16px",
-    background: "#f8f9fa",
-    border: "1px solid #e7e9ed",
-    borderRadius: "10px",
-    marginBottom: "18px",
-  }}
->
-  <div>
-    <div
-      style={{
-        fontSize: "12px",
-        fontWeight: 650,
-        color: "#30333a",
-      }}
-    >
-      New to bulk import?
-    </div>
+      {/* ========================================================
+          MODE SWITCH
+      ======================================================== */}
 
-    <div
-      style={{
-        marginTop: "4px",
-        fontSize: "10px",
-        color: "#858a94",
-      }}
-    >
-      Download the required Excel template
-      and fill in your products.
-    </div>
-  </div>
-
-  <button
-    onClick={downloadTemplate}
-    style={{
-      flexShrink: 0,
-      border: "1px solid #dfe2e7",
-      background: "#ffffff",
-      color: "#44474e",
-      borderRadius: "7px",
-      padding: "8px 12px",
-      fontSize: "10px",
-      fontWeight: 650,
-      cursor: "pointer",
-    }}
-  >
-    ↓ Download Template
-  </button>
-</div>
-            <div
-              style={{
-                background: "#fafafa",
-                border: "1px solid #e7e9ed",
-                borderRadius: "10px",
-                padding: "18px",
-                marginBottom: "18px",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "13px",
-                  fontWeight: 650,
-                  color: "#30333a",
-                  marginBottom: "6px",
-                }}
-              >
-                Upload menu file
-              </div>
-
-              <div
-                style={{
-                  fontSize: "11px",
-                  color: "#858a94",
-                  marginBottom: "12px",
-                }}
-              >
-                CSV, XLSX or XLS
-              </div>
-
-              <input
-                type="file"
-                accept=".csv,.xlsx,.xls"
-                onChange={(event) =>
-                  setFile(
-                    event.target.files?.[0] ||
-                      null
-                  )
-                }
-              />
-            </div>
-
-            <div
-              style={{
-                background: "#fafafa",
-                border: "1px solid #e7e9ed",
-                borderRadius: "10px",
-                padding: "18px",
-                marginBottom: "18px",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "13px",
-                  fontWeight: 650,
-                  color: "#30333a",
-                  marginBottom: "6px",
-                }}
-              >
-                Product images
-              </div>
-
-              <div
-                style={{
-                  fontSize: "11px",
-                  color: "#858a94",
-                  marginBottom: "12px",
-                }}
-              >
-                Optional ZIP file containing product
-                images.
-              </div>
-
-              <input
-                type="file"
-                accept=".zip"
-                onChange={(event) =>
-                  setImageZip(
-                    event.target.files?.[0] ||
-                      null
-                  )
-                }
-              />
-            </div>
-
-            <div
-              style={{
-                marginBottom: "18px",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  color: "#555a63",
-                  marginBottom: "9px",
-                }}
-              >
-                Duplicate products
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  gap: "18px",
-                }}
-              >
-                <label
-                  style={{
-                    display: "flex",
-                    gap: "7px",
-                    alignItems: "center",
-                    fontSize: "12px",
-                    color: "#555a63",
-                  }}
-                >
-                  <input
-                    type="radio"
-                    checked={
-                      duplicateAction ===
-                      "SKIP"
-                    }
-                    onChange={() =>
-                      setDuplicateAction(
-                        "SKIP"
-                      )
-                    }
-                  />
-                  Skip existing
-                </label>
-
-                <label
-                  style={{
-                    display: "flex",
-                    gap: "7px",
-                    alignItems: "center",
-                    fontSize: "12px",
-                    color: "#555a63",
-                  }}
-                >
-                  <input
-                    type="radio"
-                    checked={
-                      duplicateAction ===
-                      "CREATE"
-                    }
-                    onChange={() =>
-                      setDuplicateAction(
-                        "CREATE"
-                      )
-                    }
-                  />
-                  Create as new
-                </label>
-              </div>
-            </div>
-
-            {message && (
-              <div
-                style={{
-                  color: "#b42318",
-                  fontSize: "12px",
-                  marginBottom: "12px",
-                }}
-              >
-                {message}
-              </div>
-            )}
-
-            <ModalActions
-              onClose={onClose}
-              onSave={handleReview}
-              saveText="Review"
-            />
-          </>
-        )}
-
-        {step === "REVIEW" && (
-          <>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns:
-                  "1fr 1fr",
-                gap: "10px",
-                marginBottom: "16px",
-              }}
-            >
-              <div
-                style={{
-                  background: "#ecfdf3",
-                  border: "1px solid #d1fae5",
-                  borderRadius: "9px",
-                  padding: "13px",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "11px",
-                    color: "#15803d",
-                  }}
-                >
-                  Ready to add
-                </div>
-
-                <div
-                  style={{
-                    marginTop: "3px",
-                    fontSize: "20px",
-                    fontWeight: 700,
-                    color: "#15803d",
-                  }}
-                >
-                  {validCount}
-                </div>
-              </div>
-
-              <div
-                style={{
-                  background:
-                    invalidCount > 0
-                      ? "#fff5f5"
-                      : "#fafafa",
-                  border:
-                    invalidCount > 0
-                      ? "1px solid #ffdede"
-                      : "1px solid #e7e9ed",
-                  borderRadius: "9px",
-                  padding: "13px",
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: "11px",
-                    color:
-                      invalidCount > 0
-                        ? "#b42318"
-                        : "#858a94",
-                  }}
-                >
-                  Needs attention
-                </div>
-
-                <div
-                  style={{
-                    marginTop: "3px",
-                    fontSize: "20px",
-                    fontWeight: 700,
-                    color:
-                      invalidCount > 0
-                        ? "#b42318"
-                        : "#555a63",
-                  }}
-                >
-                  {invalidCount}
-                </div>
-              </div>
-            </div>
-
-            {imageZip && (
-              <div
-                style={{
-                  padding: "10px 12px",
-                  background: "#f5f6f8",
-                  borderRadius: "8px",
-                  fontSize: "11px",
-                  color: "#555a63",
-                  marginBottom: "14px",
-                }}
-              >
-                Image ZIP selected:{" "}
-                <strong>
-                  {imageZip.name}
-                </strong>
-              </div>
-            )}
-
-            <div
-              style={{
-                border: "1px solid #e7e9ed",
-                borderRadius: "10px",
-                overflow: "hidden",
-                maxHeight: "340px",
-                overflowY: "auto",
-              }}
-            >
-              {rows.map((row, index) => (
-                <div
-                  key={`${row.name}-${index}`}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns:
-                      "1.5fr 1fr 100px 100px",
-                    gap: "10px",
-                    alignItems: "center",
-                    padding:
-                      "11px 13px",
-                    borderBottom:
-                      index ===
-                      rows.length - 1
-                        ? "none"
-                        : "1px solid #f0f1f3",
-                  }}
-                >
-                  <div>
-                    <div
-                      style={{
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        color: "#30333a",
-                      }}
-                    >
-                      {row.name ||
-                        "Unnamed product"}
-                    </div>
-
-                    {row.error && (
-                      <div
-                        style={{
-                          marginTop: "3px",
-                          fontSize: "10px",
-                          color:
-                            "#b42318",
-                        }}
-                      >
-                        {row.error}
-                      </div>
-                    )}
-                  </div>
-
-                  <div
-                    style={{
-                      fontSize: "11px",
-                      color: "#666b74",
-                    }}
-                  >
-                    {row.category ||
-                      "—"}
-                  </div>
-
-                  <div
-                    style={{
-                      fontSize: "11px",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {formatCurrency(
-                      row.price
-                    )}
-                  </div>
-
-                  <div
-                    style={{
-                      fontSize: "10px",
-                      fontWeight: 650,
-                      color: row.valid
-                        ? "#15803d"
-                        : "#b42318",
-                    }}
-                  >
-                    {row.valid
-                      ? "Ready"
-                      : "Invalid"}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {message && (
-              <div
-                style={{
-                  color: "#b42318",
-                  fontSize: "12px",
-                  marginTop: "12px",
-                }}
-              >
-                {message}
-              </div>
-            )}
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent:
-                  "space-between",
-                gap: "10px",
-                marginTop: "18px",
-              }}
-            >
-              <button
-                onClick={() =>
-                  setStep("UPLOAD")
-                }
-                style={{
-                  border:
-                    "1px solid #dfe2e7",
-                  background: "#ffffff",
-                  color: "#555a63",
-                  borderRadius: "8px",
-                  padding: "10px 14px",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                ← Back
-              </button>
-
-              <button
-                onClick={addToMenu}
-                disabled={validCount === 0}
-                style={{
-                  border: "none",
-                  background:
-                    validCount === 0
-                      ? "#9ca3af"
-                      : "#111111",
-                  color: "#ffffff",
-                  borderRadius: "8px",
-                  padding: "10px 16px",
-                  fontSize: "12px",
-                  fontWeight: 600,
-                  cursor:
-                    validCount === 0
-                      ? "not-allowed"
-                      : "pointer",
-                }}
-              >
-                Add to Menu
-              </button>
-            </div>
-          </>
-        )}
-
-        {step === "ADDING" && (
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns:
+            "1fr 1fr",
+          gap: "10px",
+          padding:
+            "18px 22px 0",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setMode("PRODUCTS");
+            setStep("UPLOAD");
+            setMessage("");
+          }}
+          style={{
+            border:
+              mode === "PRODUCTS"
+                ? "1px solid #111111"
+                : "1px solid #e7e9ed",
+            background:
+              mode === "PRODUCTS"
+                ? "#111111"
+                : "#ffffff",
+            color:
+              mode === "PRODUCTS"
+                ? "#ffffff"
+                : "#555a63",
+            borderRadius: "9px",
+            padding: "12px",
+            textAlign: "left",
+            cursor: "pointer",
+          }}
+        >
           <div
             style={{
-              padding: "50px 20px",
-              textAlign: "center",
+              fontSize: "12px",
+              fontWeight: 700,
+            }}
+          >
+            Import Products
+          </div>
+
+          <div
+            style={{
+              marginTop: "4px",
+              fontSize: "10px",
+              opacity: 0.75,
+            }}
+          >
+            CSV / XLSX
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setMode("IMAGES");
+            setStep("UPLOAD");
+            setMessage("");
+          }}
+          style={{
+            border:
+              mode === "IMAGES"
+                ? "1px solid #111111"
+                : "1px solid #e7e9ed",
+            background:
+              mode === "IMAGES"
+                ? "#111111"
+                : "#ffffff",
+            color:
+              mode === "IMAGES"
+                ? "#ffffff"
+                : "#555a63",
+            borderRadius: "9px",
+            padding: "12px",
+            textAlign: "left",
+            cursor: "pointer",
+          }}
+        >
+          <div
+            style={{
+              fontSize: "12px",
+              fontWeight: 700,
+            }}
+          >
+            Bulk Upload Images
+          </div>
+
+          <div
+            style={{
+              marginTop: "4px",
+              fontSize: "10px",
+              opacity: 0.75,
+            }}
+          >
+            ZIP existing product images
+          </div>
+        </button>
+      </div>
+
+      <div
+        style={{
+          padding: "22px",
+        }}
+      >
+        {/* ======================================================
+            IMAGE MODE — UPLOAD
+        ====================================================== */}
+
+        {mode === "IMAGES" &&
+          step === "UPLOAD" && (
+            <div>
+              <div
+                style={{
+                  background:
+                    "#fafafa",
+                  border:
+                    "1px solid #e7e9ed",
+                  borderRadius: "10px",
+                  padding: "18px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: "13px",
+                    fontWeight: 650,
+                    color:
+                      "#30333a",
+                  }}
+                >
+                  Bulk Upload Images
+                </div>
+
+                <div
+                  style={{
+                    marginTop: "6px",
+                    fontSize: "11px",
+                    color:
+                      "#858a94",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Upload a ZIP containing
+                  images for products
+                  that already exist
+                  in your menu.
+                </div>
+
+                <label
+                  style={{
+                    display:
+                      "inline-flex",
+                    marginTop:
+                      "15px",
+                    alignItems:
+                      "center",
+                    justifyContent:
+                      "center",
+                    border:
+                      "1px solid #dfe2e7",
+                    background:
+                      "#ffffff",
+                    color:
+                      "#44474e",
+                    borderRadius:
+                      "7px",
+                    padding:
+                      "9px 13px",
+                    fontSize:
+                      "11px",
+                    fontWeight:
+                      600,
+                    cursor:
+                      "pointer",
+                  }}
+                >
+                  Choose ZIP
+
+                  <input
+                    type="file"
+                    accept=".zip"
+                    onChange={(
+                      event
+                    ) => {
+                      const selectedFile =
+                        event
+                          .target
+                          .files?.[0];
+
+                      if (
+                        selectedFile
+                      ) {
+                        reviewImagesOnly(
+                          selectedFile
+                        );
+                      }
+
+                      event.target.value =
+                        "";
+                    }}
+                    style={{
+                      display:
+                        "none",
+                    }}
+                  />
+                </label>
+
+                <div
+                  style={{
+                    marginTop:
+                      "12px",
+                    fontSize:
+                      "10px",
+                    color:
+                      "#858a94",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Image filenames must
+                  match product names.
+                  <br />
+                  Example:
+                  <strong>
+                    {" "}
+                    chicken-biryani.jpg
+                  </strong>
+                  {" → "}
+                  <strong>
+                    Chicken Biryani
+                  </strong>
+                </div>
+              </div>
+            </div>
+          )}
+
+        {/* ======================================================
+            IMAGE MODE — REVIEW
+        ====================================================== */}
+
+        {mode === "IMAGES" &&
+          step ===
+            "IMAGE_REVIEW" && (
+            <div>
+              <div
+                style={{
+                  display:
+                    "flex",
+                  justifyContent:
+                    "space-between",
+                  alignItems:
+                    "center",
+                  marginBottom:
+                    "15px",
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontSize:
+                        "14px",
+                      fontWeight:
+                        700,
+                      color:
+                        "#202228",
+                    }}
+                  >
+                    Review Images
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "4px",
+                      fontSize:
+                        "11px",
+                      color:
+                        "#858a94",
+                    }}
+                  >
+                    Check the image
+                    matches before
+                    uploading.
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    color:
+                      "#555a63",
+                  }}
+                >
+                  {
+                    imageRows.length
+                  }{" "}
+                  images
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display:
+                    "grid",
+                  gridTemplateColumns:
+                    "1fr 1fr",
+                  gap: "10px",
+                  marginBottom:
+                    "15px",
+                }}
+              >
+                <div
+                  style={{
+                    background:
+                      "#ecfdf3",
+                    border:
+                      "1px solid #d1fae5",
+                    borderRadius:
+                      "9px",
+                    padding:
+                      "13px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize:
+                        "10px",
+                      color:
+                        "#15803d",
+                    }}
+                  >
+                    Matched
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "3px",
+                      fontSize:
+                        "20px",
+                      fontWeight:
+                        700,
+                      color:
+                        "#15803d",
+                    }}
+                  >
+                    {
+                      matchedImageCount
+                    }
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background:
+                      "#fff5f5",
+                    border:
+                      "1px solid #ffdede",
+                    borderRadius:
+                      "9px",
+                    padding:
+                      "13px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize:
+                        "10px",
+                      color:
+                        "#b42318",
+                    }}
+                  >
+                    Unmatched
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "3px",
+                      fontSize:
+                        "20px",
+                      fontWeight:
+                        700,
+                      color:
+                        "#b42318",
+                    }}
+                  >
+                    {
+                      unmatchedImageCount
+                    }
+                  </div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  border:
+                    "1px solid #e7e9ed",
+                  borderRadius:
+                    "10px",
+                  overflow:
+                    "hidden",
+                  maxHeight:
+                    "350px",
+                  overflowY:
+                    "auto",
+                }}
+              >
+                {imageRows.map(
+                  (
+                    row,
+                    index
+                  ) => (
+                    <div
+                      key={`${row.fileName}-${index}`}
+                      style={{
+                        display:
+                          "flex",
+                        alignItems:
+                          "center",
+                        justifyContent:
+                          "space-between",
+                        gap:
+                          "15px",
+                        padding:
+                          "12px 14px",
+                        borderBottom:
+                          index ===
+                          imageRows.length -
+                            1
+                            ? "none"
+                            : "1px solid #f0f1f3",
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize:
+                              "11px",
+                            fontWeight:
+                              600,
+                            color:
+                              "#30333a",
+                          }}
+                        >
+                          {
+                            row.fileName
+                          }
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop:
+                              "3px",
+                            fontSize:
+                              "10px",
+                            color:
+                              "#858a94",
+                          }}
+                        >
+                          {row.matchedProduct
+                            ? `→ ${row.matchedProduct.name}`
+                            : "No matching product"}
+                        </div>
+                      </div>
+
+                      <span
+                        style={{
+                          padding:
+                            "4px 8px",
+                          borderRadius:
+                            "999px",
+                          background:
+                            row.matchedProduct
+                              ? "#ecfdf3"
+                              : "#fff5f5",
+                          color:
+                            row.matchedProduct
+                              ? "#15803d"
+                              : "#b42318",
+                          fontSize:
+                            "9px",
+                          fontWeight:
+                            650,
+                        }}
+                      >
+                        {row.matchedProduct
+                          ? "Matched"
+                          : "Unmatched"}
+                      </span>
+                    </div>
+                  )
+                )}
+              </div>
+
+              {message && (
+                <div
+                  style={{
+                    marginTop:
+                      "12px",
+                    fontSize:
+                      "11px",
+                    color:
+                      "#b42318",
+                  }}
+                >
+                  {message}
+                </div>
+              )}
+
+              <div
+                style={{
+                  display:
+                    "flex",
+                  justifyContent:
+                    "space-between",
+                  marginTop:
+                    "18px",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep(
+                      "UPLOAD"
+                    );
+                    setImageRows(
+                      []
+                    );
+                    setImageZip(
+                      null
+                    );
+                  }}
+                  style={{
+                    border:
+                      "1px solid #dfe2e7",
+                    background:
+                      "#ffffff",
+                    color:
+                      "#555a63",
+                    borderRadius:
+                      "8px",
+                    padding:
+                      "9px 13px",
+                    fontSize:
+                      "11px",
+                    fontWeight:
+                      600,
+                    cursor:
+                      "pointer",
+                  }}
+                >
+                  ← Back
+                </button>
+
+                <button
+                  type="button"
+                  onClick={
+                    uploadImagesOnly
+                  }
+                  disabled={
+                    matchedImageCount ===
+                    0
+                  }
+                  style={{
+                    border:
+                      "none",
+                    background:
+                      matchedImageCount >
+                      0
+                        ? "#111111"
+                        : "#9ca3af",
+                    color:
+                      "#ffffff",
+                    borderRadius:
+                      "8px",
+                    padding:
+                      "9px 15px",
+                    fontSize:
+                      "11px",
+                    fontWeight:
+                      600,
+                    cursor:
+                      matchedImageCount >
+                      0
+                        ? "pointer"
+                        : "not-allowed",
+                  }}
+                >
+                  Upload Images
+                </button>
+              </div>
+            </div>
+          )}
+
+        {/* ======================================================
+            PRODUCT MODE — UPLOAD
+        ====================================================== */}
+
+        {mode ===
+          "PRODUCTS" &&
+          step === "UPLOAD" && (
+            <>
+              <div
+                style={{
+                  display:
+                    "flex",
+                  alignItems:
+                    "center",
+                  justifyContent:
+                    "space-between",
+                  gap: "15px",
+                  padding:
+                    "14px 16px",
+                  background:
+                    "#f8f9fa",
+                  border:
+                    "1px solid #e7e9ed",
+                  borderRadius:
+                    "10px",
+                  marginBottom:
+                    "18px",
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontSize:
+                        "12px",
+                      fontWeight:
+                        650,
+                      color:
+                        "#30333a",
+                    }}
+                  >
+                    New to bulk
+                    import?
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "4px",
+                      fontSize:
+                        "10px",
+                      color:
+                        "#858a94",
+                    }}
+                  >
+                    Download the
+                    required Excel
+                    template.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={
+                    downloadTemplate
+                  }
+                  style={{
+                    flexShrink:
+                      0,
+                    border:
+                      "1px solid #dfe2e7",
+                    background:
+                      "#ffffff",
+                    color:
+                      "#44474e",
+                    borderRadius:
+                      "7px",
+                    padding:
+                      "8px 12px",
+                    fontSize:
+                      "10px",
+                    fontWeight:
+                      650,
+                    cursor:
+                      "pointer",
+                  }}
+                >
+                  ↓ Download Template
+                </button>
+              </div>
+
+              {/* MENU FILE */}
+
+              <div
+                style={{
+                  background:
+                    "#fafafa",
+                  border:
+                    "1px solid #e7e9ed",
+                  borderRadius:
+                    "10px",
+                  padding:
+                    "18px",
+                  marginBottom:
+                    "18px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      "13px",
+                    fontWeight:
+                      650,
+                    color:
+                      "#30333a",
+                    marginBottom:
+                      "6px",
+                  }}
+                >
+                  Upload menu file
+                </div>
+
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    color:
+                      "#858a94",
+                    marginBottom:
+                      "12px",
+                  }}
+                >
+                  CSV, XLSX or XLS
+                </div>
+
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={(
+                    event
+                  ) =>
+                    setFile(
+                      event.target
+                        .files?.[0] ||
+                        null
+                    )
+                  }
+                />
+
+                {file && (
+                  <div
+                    style={{
+                      marginTop:
+                        "8px",
+                      fontSize:
+                        "11px",
+                      color:
+                        "#555a63",
+                    }}
+                  >
+                    Selected:{" "}
+                    {file.name}
+                  </div>
+                )}
+              </div>
+
+              {/* OPTIONAL ZIP */}
+
+              <div
+                style={{
+                  background:
+                    "#fafafa",
+                  border:
+                    "1px solid #e7e9ed",
+                  borderRadius:
+                    "10px",
+                  padding:
+                    "18px",
+                  marginBottom:
+                    "18px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      "13px",
+                    fontWeight:
+                      650,
+                    color:
+                      "#30333a",
+                    marginBottom:
+                      "6px",
+                  }}
+                >
+                  Product images
+                </div>
+
+                <div
+                  style={{
+                    fontSize:
+                      "11px",
+                    color:
+                      "#858a94",
+                    marginBottom:
+                      "12px",
+                  }}
+                >
+                  Optional — upload a
+                  ZIP of product
+                  images. You can also
+                  add images later.
+                </div>
+
+                <input
+                  type="file"
+                  accept=".zip"
+                  onChange={(
+                    event
+                  ) =>
+                    setImageZip(
+                      event.target
+                        .files?.[0] ||
+                        null
+                    )
+                  }
+                />
+
+                {imageZip && (
+                  <div
+                    style={{
+                      marginTop:
+                        "8px",
+                      fontSize:
+                        "11px",
+                      color:
+                        "#555a63",
+                    }}
+                  >
+                    Selected:{" "}
+                    {
+                      imageZip.name
+                    }
+                  </div>
+                )}
+              </div>
+
+              {/* DUPLICATES */}
+
+              <div
+                style={{
+                  marginBottom:
+                    "18px",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize:
+                      "12px",
+                    fontWeight:
+                      600,
+                    color:
+                      "#555a63",
+                    marginBottom:
+                      "9px",
+                  }}
+                >
+                  Duplicate products
+                </div>
+
+                <div
+                  style={{
+                    display:
+                      "flex",
+                    gap: "18px",
+                  }}
+                >
+                  <label
+                    style={{
+                      display:
+                        "flex",
+                      gap: "7px",
+                      alignItems:
+                        "center",
+                      fontSize:
+                        "12px",
+                      color:
+                        "#555a63",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      checked={
+                        duplicateAction ===
+                        "SKIP"
+                      }
+                      onChange={() =>
+                        setDuplicateAction(
+                          "SKIP"
+                        )
+                      }
+                    />
+                    Skip existing
+                  </label>
+
+                  <label
+                    style={{
+                      display:
+                        "flex",
+                      gap: "7px",
+                      alignItems:
+                        "center",
+                      fontSize:
+                        "12px",
+                      color:
+                        "#555a63",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      checked={
+                        duplicateAction ===
+                        "CREATE"
+                      }
+                      onChange={() =>
+                        setDuplicateAction(
+                          "CREATE"
+                        )
+                      }
+                    />
+                    Create as new
+                  </label>
+                </div>
+              </div>
+
+              {message && (
+                <div
+                  style={{
+                    color:
+                      "#b42318",
+                    fontSize:
+                      "12px",
+                    marginBottom:
+                      "12px",
+                  }}
+                >
+                  {message}
+                </div>
+              )}
+
+              <ModalActions
+                onClose={
+                  onClose
+                }
+                onSave={
+                  handleReview
+                }
+                saveText="Review"
+              />
+            </>
+          )}
+
+        {/* ======================================================
+            PRODUCT MODE — REVIEW
+        ====================================================== */}
+
+        {mode ===
+          "PRODUCTS" &&
+          step === "REVIEW" && (
+            <>
+              <div
+                style={{
+                  display:
+                    "grid",
+                  gridTemplateColumns:
+                    "1fr 1fr",
+                  gap: "10px",
+                  marginBottom:
+                    "16px",
+                }}
+              >
+                <div
+                  style={{
+                    background:
+                      "#ecfdf3",
+                    border:
+                      "1px solid #d1fae5",
+                    borderRadius:
+                      "9px",
+                    padding:
+                      "13px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize:
+                        "11px",
+                      color:
+                        "#15803d",
+                    }}
+                  >
+                    Ready to add
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "3px",
+                      fontSize:
+                        "20px",
+                      fontWeight:
+                        700,
+                      color:
+                        "#15803d",
+                    }}
+                  >
+                    {
+                      validCount
+                    }
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    background:
+                      invalidCount >
+                      0
+                        ? "#fff5f5"
+                        : "#fafafa",
+                    border:
+                      invalidCount >
+                      0
+                        ? "1px solid #ffdede"
+                        : "1px solid #e7e9ed",
+                    borderRadius:
+                      "9px",
+                    padding:
+                      "13px",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize:
+                        "11px",
+                      color:
+                        invalidCount >
+                        0
+                          ? "#b42318"
+                          : "#858a94",
+                    }}
+                  >
+                    Needs attention
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "3px",
+                      fontSize:
+                        "20px",
+                      fontWeight:
+                        700,
+                      color:
+                        invalidCount >
+                        0
+                          ? "#b42318"
+                          : "#555a63",
+                    }}
+                  >
+                    {
+                      invalidCount
+                    }
+                  </div>
+                </div>
+              </div>
+
+              {imageZip && (
+                <div
+                  style={{
+                    padding:
+                      "10px 12px",
+                    background:
+                      "#f5f6f8",
+                    borderRadius:
+                      "8px",
+                    fontSize:
+                      "11px",
+                    color:
+                      "#555a63",
+                    marginBottom:
+                      "14px",
+                  }}
+                >
+                  Image ZIP selected:{" "}
+                  <strong>
+                    {
+                      imageZip.name
+                    }
+                  </strong>
+                </div>
+              )}
+
+              <div
+                style={{
+                  border:
+                    "1px solid #e7e9ed",
+                  borderRadius:
+                    "10px",
+                  overflow:
+                    "hidden",
+                  maxHeight:
+                    "340px",
+                  overflowY:
+                    "auto",
+                }}
+              >
+                {rows.map(
+                  (
+                    row,
+                    index
+                  ) => (
+                    <div
+                      key={`${row.name}-${index}`}
+                      style={{
+                        display:
+                          "grid",
+                        gridTemplateColumns:
+                          "1.5fr 1fr 100px 100px",
+                        gap: "10px",
+                        alignItems:
+                          "center",
+                        padding:
+                          "11px 13px",
+                        borderBottom:
+                          index ===
+                          rows.length -
+                            1
+                            ? "none"
+                            : "1px solid #f0f1f3",
+                      }}
+                    >
+                      <div>
+                        <div
+                          style={{
+                            fontSize:
+                              "11px",
+                            fontWeight:
+                              600,
+                            color:
+                              "#30333a",
+                          }}
+                        >
+                          {row.name ||
+                            "Unnamed product"}
+                        </div>
+
+                        {row.error && (
+                          <div
+                            style={{
+                              marginTop:
+                                "3px",
+                              fontSize:
+                                "10px",
+                              color:
+                                "#b42318",
+                            }}
+                          >
+                            {
+                              row.error
+                            }
+                          </div>
+                        )}
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize:
+                            "11px",
+                          color:
+                            "#666b74",
+                        }}
+                      >
+                        {row.category ||
+                          "—"}
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize:
+                            "11px",
+                          fontWeight:
+                            600,
+                        }}
+                      >
+                        {formatCurrency(
+                          row.price
+                        )}
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize:
+                            "10px",
+                          fontWeight:
+                            650,
+                          color:
+                            row.valid
+                              ? "#15803d"
+                              : "#b42318",
+                        }}
+                      >
+                        {row.valid
+                          ? "Ready"
+                          : "Invalid"}
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
+
+              {message && (
+                <div
+                  style={{
+                    color:
+                      "#b42318",
+                    fontSize:
+                      "12px",
+                    marginTop:
+                      "12px",
+                  }}
+                >
+                  {message}
+                </div>
+              )}
+
+              <div
+                style={{
+                  display:
+                    "flex",
+                  justifyContent:
+                    "space-between",
+                  gap: "10px",
+                  marginTop:
+                    "18px",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStep(
+                      "UPLOAD"
+                    )
+                  }
+                  style={{
+                    border:
+                      "1px solid #dfe2e7",
+                    background:
+                      "#ffffff",
+                    color:
+                      "#555a63",
+                    borderRadius:
+                      "8px",
+                    padding:
+                      "10px 14px",
+                    fontSize:
+                      "12px",
+                    fontWeight:
+                      600,
+                    cursor:
+                      "pointer",
+                  }}
+                >
+                  ← Back
+                </button>
+
+                <button
+                  type="button"
+                  onClick={
+                    addToMenu
+                  }
+                  disabled={
+                    validCount ===
+                    0
+                  }
+                  style={{
+                    border:
+                      "none",
+                    background:
+                      validCount >
+                      0
+                        ? "#111111"
+                        : "#9ca3af",
+                    color:
+                      "#ffffff",
+                    borderRadius:
+                      "8px",
+                    padding:
+                      "10px 16px",
+                    fontSize:
+                      "12px",
+                    fontWeight:
+                      600,
+                    cursor:
+                      validCount >
+                      0
+                        ? "pointer"
+                        : "not-allowed",
+                  }}
+                >
+                  Add to Menu
+                </button>
+              </div>
+            </>
+          )}
+
+        {/* ======================================================
+            ADDING
+        ====================================================== */}
+
+        {step ===
+          "ADDING" && (
+          <div
+            style={{
+              padding:
+                "50px 20px",
+              textAlign:
+                "center",
             }}
           >
             <div
               style={{
-                fontSize: "15px",
-                fontWeight: 650,
-                color: "#30333a",
+                fontSize:
+                  "15px",
+                fontWeight:
+                  650,
+                color:
+                  "#30333a",
               }}
             >
-              Adding products...
+              {mode ===
+              "IMAGES"
+                ? "Uploading images..."
+                : "Adding products..."}
             </div>
 
             <div
               style={{
-                marginTop: "7px",
-                fontSize: "12px",
-                color: "#858a94",
+                marginTop:
+                  "7px",
+                fontSize:
+                  "12px",
+                color:
+                  "#858a94",
               }}
             >
-              Please don't close this window.
+              Please don't close
+              this window.
             </div>
           </div>
         )}
 
-        {step === "DONE" && (
+        {/* ======================================================
+            DONE
+        ====================================================== */}
+
+        {step ===
+          "DONE" && (
           <div
             style={{
-              padding: "45px 20px",
-              textAlign: "center",
+              padding:
+                "45px 20px",
+              textAlign:
+                "center",
             }}
           >
             <div
               style={{
                 width: "46px",
                 height: "46px",
-                margin: "0 auto 15px",
-                borderRadius: "50%",
-                background: "#ecfdf3",
-                color: "#15803d",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: "20px",
-                fontWeight: 700,
+                margin:
+                  "0 auto 15px",
+                borderRadius:
+                  "50%",
+                background:
+                  "#ecfdf3",
+                color:
+                  "#15803d",
+                display:
+                  "flex",
+                alignItems:
+                  "center",
+                justifyContent:
+                  "center",
+                fontSize:
+                  "20px",
+                fontWeight:
+                  700,
               }}
             >
               ✓
@@ -2863,37 +4350,61 @@ function BulkImportModal({
 
             <div
               style={{
-                fontSize: "16px",
-                fontWeight: 700,
-                color: "#202228",
+                fontSize:
+                  "16px",
+                fontWeight:
+                  700,
+                color:
+                  "#202228",
               }}
             >
-              Menu updated
+              {mode ===
+              "IMAGES"
+                ? "Images uploaded"
+                : "Menu updated"}
             </div>
 
             <div
               style={{
-                marginTop: "6px",
-                fontSize: "12px",
-                color: "#858a94",
+                marginTop:
+                  "6px",
+                fontSize:
+                  "12px",
+                color:
+                  "#858a94",
               }}
             >
-              {validCount} products were added
-              successfully.
+              {mode ===
+              "IMAGES"
+                ? message ||
+                  "Product images were uploaded successfully."
+                : `${validCount} products were added successfully.`}
             </div>
 
             <button
-              onClick={onComplete}
+              type="button"
+              onClick={
+                onComplete
+              }
               style={{
-                marginTop: "20px",
-                border: "none",
-                background: "#111111",
-                color: "#ffffff",
-                borderRadius: "8px",
-                padding: "10px 18px",
-                fontSize: "12px",
-                fontWeight: 600,
-                cursor: "pointer",
+                marginTop:
+                  "20px",
+                border:
+                  "none",
+                background:
+                  "#111111",
+                color:
+                  "#ffffff",
+                borderRadius:
+                  "8px",
+                padding:
+                  "10px 18px",
+                fontSize:
+                  "12px",
+                fontWeight:
+                  600,
+                cursor:
+                  "pointer",
               }}
             >
               Done

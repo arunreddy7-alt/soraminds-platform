@@ -16,6 +16,7 @@ const navigation = [
     label: "Management",
     items: [
       { name: "Menu", path: "/restaurant/menu" },
+      { name: "Combos", path: "/restaurant/combos" },
       { name: "Promotions", path: "/restaurant/promotions" },
       { name: "Coupons", path: "/restaurant/coupons" },
       { name: "Tables", path: "/restaurant/tables" },
