@@ -28,15 +28,20 @@ type Permission = {
 };
 
 const MODULES = [
+  "dashboard",
   "orders",
+  "customers",
   "menu",
+  "combos",
+  "promotions",
   "coupons",
   "tables",
+  "qr_codes",
+  "reviews",
+  "analytics",
   "reports",
   "staff",
-  "promotions",
-  "reviews",
-  "qr_codes",
+  "settings",
 ];
 
 const ACCESS_OPTIONS = [
