@@ -1,5 +1,7 @@
 import CartClient from "./CartClient";
 
+export const instant = false;
+
 export default async function CartPage({
   params,
 }: {

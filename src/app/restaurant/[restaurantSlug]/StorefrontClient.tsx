@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   getCartCount,
 } from "@/lib/customer/cart";
@@ -67,14 +67,54 @@ type Banner = {
   is_active: boolean;
 };
 
+type TableSession = {
+  id: number;
+  restaurant_id: number;
+  table_id: number;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  group_code: string;
+};
+
+type TableInfo = {
+  id: number;
+  tableNumber: number | string;
+  seats: number;
+};
+
 export default function StorefrontClient() {
   const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const restaurantSlug =
     typeof params.restaurantSlug === "string"
       ? params.restaurantSlug
       : "";
+
+  /*
+   * CUSTOMER ORDER MODE
+   *
+   * Normal restaurant URL:
+   * /restaurant/test-restaurant
+   *
+   * Takeaway QR:
+   * /restaurant/test-restaurant?orderType=TAKEAWAY
+   *
+   * Table QR:
+   * /restaurant/test-restaurant?orderType=DINE_IN&tableId=2
+   */
+  const orderType =
+    searchParams.get("orderType") === "DINE_IN"
+      ? "DINE_IN"
+      : "TAKEAWAY";
+
+  const tableIdParam = searchParams.get("tableId");
+
+  const tableId = tableIdParam
+    ? Number(tableIdParam)
+    : null;
 
   const [restaurant, setRestaurant] =
     useState<Restaurant | null>(null);
@@ -97,8 +137,31 @@ export default function StorefrontClient() {
   const [search, setSearch] = useState("");
 
   const [loading, setLoading] = useState(true);
+
   const [error, setError] = useState("");
 
+  /*
+   * TABLE SESSION
+   */
+  const [tableSession, setTableSession] =
+    useState<TableSession | null>(null);
+
+  const [tableInfo, setTableInfo] =
+    useState<TableInfo | null>(null);
+
+  const [sessionLoading, setSessionLoading] =
+    useState(false);
+
+  const [sessionError, setSessionError] =
+    useState("");
+  const [showJoinTable, setShowJoinTable] = useState(false);
+  const [joinCode, setJoinCode] = useState("");
+  const [joinLoading, setJoinLoading] = useState(false);
+  const [joinError, setJoinError] = useState("");
+
+  /*
+   * LOAD RESTAURANT
+   */
   useEffect(() => {
     loadStorefront();
   }, [restaurantSlug]);
@@ -129,8 +192,6 @@ export default function StorefrontClient() {
       setProducts(data.products || []);
       setCombos(data.combos || []);
       setBanners(data.banners || []);
-
-      
     } catch (err) {
       setError(
         err instanceof Error
@@ -142,31 +203,210 @@ export default function StorefrontClient() {
     }
   };
 
-
-  const [cartCount, setCartCount] =
-  useState(0);
-
+  /*
+   * CREATE / JOIN TABLE SESSION
+   */
   useEffect(() => {
-  const updateCartCount = () => {
-    setCartCount(
-      getCartCount(restaurantSlug)
+    if (
+      orderType !== "DINE_IN" ||
+      !restaurantSlug ||
+      !tableId ||
+      !Number.isInteger(tableId)
+    ) {
+      setTableSession(null);
+      setTableInfo(null);
+      setSessionError("");
+      return;
+    }
+
+    initializeTableSession();
+  }, [
+    orderType,
+    restaurantSlug,
+    tableId,
+  ]);
+
+  const joinTableByCode = async () => {
+  const code = joinCode.trim().toUpperCase();
+
+  if (!code) {
+    setJoinError("Please enter the table code.");
+    return;
+  }
+
+  try {
+    setJoinLoading(true);
+    setJoinError("");
+
+    const response = await fetch(
+      "/api/customer/table-session/join",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          restaurantSlug,
+          groupCode: code,
+        }),
+      }
     );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Unable to join table."
+      );
+    }
+
+    const session = data.session;
+    const table = data.table;
+
+    // Save the joined session locally as a reference
+    localStorage.setItem(
+      `soraminds-table-session-${restaurantSlug}`,
+      JSON.stringify({
+        sessionId: session.id,
+        tableId: table.id,
+        tableNumber: table.tableNumber,
+        groupCode: session.group_code,
+      })
+    );
+
+    // Redirect into the SAME shared table session
+    const params = new URLSearchParams();
+
+    params.set("orderType", "DINE_IN");
+    params.set("tableId", String(table.id));
+    params.set("sessionId", String(session.id));
+
+    router.push(
+      `/restaurant/${restaurantSlug}?${params.toString()}`
+    );
+  } catch (err) {
+    setJoinError(
+      err instanceof Error
+        ? err.message
+        : "Unable to join table."
+    );
+  } finally {
+    setJoinLoading(false);
+  }
+};
+
+  const getCustomerContextQuery = () => {
+  if (orderType === "DINE_IN" && tableId) {
+    const sessionId =
+      tableSession?.id ??
+      null;
+
+    const params = new URLSearchParams();
+
+    params.set("orderType", "DINE_IN");
+    params.set("tableId", String(tableId));
+
+    if (sessionId) {
+      params.set(
+        "sessionId",
+        String(sessionId)
+      );
+    }
+
+    return `?${params.toString()}`;
+  }
+
+  return "?orderType=TAKEAWAY";
+};
+
+  const initializeTableSession = async () => {
+    try {
+      setSessionLoading(true);
+      setSessionError("");
+
+      const response = await fetch(
+        "/api/customer/table-session",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            restaurantSlug,
+            tableId,
+          }),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+            "Unable to start table session."
+        );
+      }
+
+      setTableSession(data.session);
+      setTableInfo(data.table);
+
+      /*
+       * Save session locally only as a reference.
+       *
+       * The actual cart will NOT be stored here.
+       * The real shared cart will live in Supabase.
+       */
+      localStorage.setItem(
+        `soraminds-table-session-${restaurantSlug}`,
+        JSON.stringify({
+          sessionId: data.session.id,
+          tableId: data.table.id,
+          tableNumber: data.table.tableNumber,
+          groupCode: data.session.group_code,
+        })
+      );
+    } catch (err) {
+      setSessionError(
+        err instanceof Error
+          ? err.message
+          : "Unable to start table session."
+      );
+    } finally {
+      setSessionLoading(false);
+    }
   };
 
-  updateCartCount();
+  /*
+   * CART COUNT
+   *
+   * For now we keep the existing local cart count.
+   * We will replace this with the shared session cart
+   * in the next step.
+   */
+  const [cartCount, setCartCount] =
+    useState(0);
 
-  window.addEventListener(
-    "soraminds-cart-updated",
-    updateCartCount
-  );
+  useEffect(() => {
+    const updateCartCount = () => {
+      setCartCount(
+        getCartCount(restaurantSlug)
+      );
+    };
 
-  return () => {
-    window.removeEventListener(
+    updateCartCount();
+
+    window.addEventListener(
       "soraminds-cart-updated",
       updateCartCount
     );
-  };
-}, [restaurantSlug]);
+
+    return () => {
+      window.removeEventListener(
+        "soraminds-cart-updated",
+        updateCartCount
+      );
+    };
+  }, [restaurantSlug]);
 
   const filteredProducts = products.filter(
     (product) => {
@@ -319,26 +559,27 @@ export default function StorefrontClient() {
           </div>
 
           <button
-  onClick={() =>
-    (window.location.href =
-      `/restaurant/${restaurantSlug}/cart`)
-  }
-  style={{
-    border: "none",
-    background: accent,
-    color: "#fff",
-    padding: "9px 14px",
-    borderRadius: "8px",
-    fontSize: "12px",
-    fontWeight: "600",
-    cursor: "pointer",
-  }}
->
-  Cart
-{cartCount > 0
-  ? ` (${cartCount})`
-  : ""}
-</button>
+            onClick={() =>
+  router.push(
+    `/restaurant/${restaurantSlug}/cart${getCustomerContextQuery()}`
+  )
+}
+            style={{
+              border: "none",
+              background: accent,
+              color: "#fff",
+              padding: "9px 14px",
+              borderRadius: "8px",
+              fontSize: "12px",
+              fontWeight: "600",
+              cursor: "pointer",
+            }}
+          >
+            Cart
+            {cartCount > 0
+              ? ` (${cartCount})`
+              : ""}
+          </button>
         </div>
       </header>
 
@@ -349,6 +590,149 @@ export default function StorefrontClient() {
           padding: "24px 22px 50px",
         }}
       >
+        {/* ORDER MODE */}
+        <div
+          style={{
+            marginBottom: "18px",
+            background: "#fff",
+            border:
+              "1px solid #eaecf0",
+            borderRadius: "12px",
+            padding: "14px 16px",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent:
+                "space-between",
+              gap: "12px",
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#858a94",
+                  marginBottom: "4px",
+                  fontWeight: "600",
+                  textTransform: "uppercase",
+                }}
+              >
+                Order Mode
+              </div>
+
+              <div
+                style={{
+                  fontSize: "16px",
+                  fontWeight: "700",
+                  color: accent,
+                }}
+              >
+                {orderType === "DINE_IN"
+                  ? `🍽️ DINE-IN${
+                      tableInfo
+                        ? ` • TABLE ${tableInfo.tableNumber}`
+                        : tableId
+                        ? ` • TABLE ${tableId}`
+                        : ""
+                    }`
+                  : "🥡 TAKEAWAY"}
+              </div>
+            </div>
+
+            {orderType === "DINE_IN" &&
+              tableSession && (
+                <div
+                  style={{
+                    textAlign: "right",
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: "10px",
+                      color: "#858a94",
+                      marginBottom: "3px",
+                      fontWeight: "600",
+                    }}
+                  >
+                    TABLE JOIN CODE
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: "18px",
+                      fontWeight: "800",
+                      letterSpacing: "2px",
+                      color: "#202228",
+                    }}
+                  >
+                    {tableSession.group_code}
+                  </div>
+                </div>
+              )}
+          </div>
+
+          {orderType === "DINE_IN" &&
+            sessionLoading && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  fontSize: "11px",
+                  color: "#667085",
+                }}
+              >
+                Connecting you to this table...
+              </div>
+            )}
+
+          {orderType === "DINE_IN" &&
+            sessionError && (
+              <div
+                style={{
+                  marginTop: "10px",
+                  padding: "9px 11px",
+                  borderRadius: "7px",
+                  background: "#fef3f2",
+                  color: "#b42318",
+                  fontSize: "11px",
+                }}
+              >
+                {sessionError}
+              </div>
+            )}
+
+          
+            {orderType === "DINE_IN" &&
+  tableSession &&
+  !sessionLoading && (
+    <div
+      style={{
+        marginTop: "8px",
+        fontSize: "11px",
+        color: "#667085",
+      }}
+    >
+      Share the join code with others at
+      your table. Everyone will use the
+      same table session.
+    </div>
+  )}
+
+{/* JOIN TABLE */}
+<div
+  style={{
+    marginTop: "16px",
+    paddingTop: "16px",
+    borderTop: "1px solid #eaecf0",
+  }}
+>
+  {/* paste the Join Table UI here */}
+</div>
+        </div>
+
         {/* STATUS */}
         <div
           style={{
@@ -408,8 +792,7 @@ export default function StorefrontClient() {
                   borderRadius: "14px",
                   overflow: "hidden",
                   position: "relative",
-                  background:
-                    accent,
+                  background: accent,
                   color: "#fff",
                 }}
               >
@@ -456,8 +839,7 @@ export default function StorefrontClient() {
                   {banner.description && (
                     <p
                       style={{
-                        margin:
-                          "8px 0 0",
+                        margin: "8px 0 0",
                         fontSize: "12px",
                         lineHeight: 1.5,
                       }}
@@ -497,78 +879,80 @@ export default function StorefrontClient() {
           />
         </div>
 
-       {/* CATEGORIES */}
-<div
-  style={{
-    display: "flex",
-    gap: "8px",
-    overflowX: "auto",
-    paddingBottom: "8px",
-    marginBottom: "25px",
-    scrollbarWidth: "thin",
-  }}
->
-  {/* ALL */}
-  <button
-    onClick={() => setSelectedCategory(null)}
-    style={{
-      flexShrink: 0,
-      border:
-        selectedCategory === null
-          ? "none"
-          : "1px solid #eaecf0",
-      background:
-        selectedCategory === null
-          ? accent
-          : "#fff",
-      color:
-        selectedCategory === null
-          ? "#fff"
-          : "#475467",
-      padding: "9px 16px",
-      borderRadius: "999px",
-      whiteSpace: "nowrap",
-      cursor: "pointer",
-      fontSize: "11px",
-      fontWeight: "600",
-    }}
-  >
-    All
-  </button>
+        {/* CATEGORIES */}
+        <div
+          style={{
+            display: "flex",
+            gap: "8px",
+            overflowX: "auto",
+            paddingBottom: "8px",
+            marginBottom: "25px",
+            scrollbarWidth: "thin",
+          }}
+        >
+          {/* ALL */}
+          <button
+            onClick={() =>
+              setSelectedCategory(null)
+            }
+            style={{
+              flexShrink: 0,
+              border:
+                selectedCategory === null
+                  ? "none"
+                  : "1px solid #eaecf0",
+              background:
+                selectedCategory === null
+                  ? accent
+                  : "#fff",
+              color:
+                selectedCategory === null
+                  ? "#fff"
+                  : "#475467",
+              padding: "9px 16px",
+              borderRadius: "999px",
+              whiteSpace: "nowrap",
+              cursor: "pointer",
+              fontSize: "11px",
+              fontWeight: "600",
+            }}
+          >
+            All
+          </button>
 
-  {/* CATEGORIES */}
-  {categories.map((category) => (
-    <button
-      key={category.id}
-      onClick={() =>
-        setSelectedCategory(category.id)
-      }
-      style={{
-        flexShrink: 0,
-        border:
-          selectedCategory === category.id
-            ? "none"
-            : "1px solid #eaecf0",
-        background:
-          selectedCategory === category.id
-            ? accent
-            : "#fff",
-        color:
-          selectedCategory === category.id
-            ? "#fff"
-            : "#475467",
-        padding: "9px 14px",
-        borderRadius: "999px",
-        whiteSpace: "nowrap",
-        cursor: "pointer",
-        fontSize: "11px",
-        fontWeight: "600",
-      }}
-    >
-      {category.name}
-    </button>
-  ))}
-</div>
+          {categories.map((category) => (
+            <button
+              key={category.id}
+              onClick={() =>
+                setSelectedCategory(category.id)
+              }
+              style={{
+                flexShrink: 0,
+                border:
+                  selectedCategory === category.id
+                    ? "none"
+                    : "1px solid #eaecf0",
+                background:
+                  selectedCategory === category.id
+                    ? accent
+                    : "#fff",
+                color:
+                  selectedCategory === category.id
+                    ? "#fff"
+                    : "#475467",
+                padding: "9px 14px",
+                borderRadius: "999px",
+                whiteSpace: "nowrap",
+                cursor: "pointer",
+                fontSize: "11px",
+                fontWeight: "600",
+              }}
+            >
+              {category.name}
+            </button>
+          ))}
+        </div>
+
         {/* COMBOS */}
         {combos.length > 0 && (
           <section
@@ -657,8 +1041,7 @@ export default function StorefrontClient() {
                           fontSize: "15px",
                         }}
                       >
-                        ₹
-                        {combo.combo_price}
+                        ₹{combo.combo_price}
                       </div>
 
                       {combo.original_price >
@@ -725,10 +1108,11 @@ export default function StorefrontClient() {
                   <div
                     key={product.id}
                     onClick={() =>
-  router.push(
-    `/restaurant/${restaurantSlug}/product/${product.slug}`
-  )
-}   
+                      router.push(
+                          `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
+
+                      )
+                    }
                     style={{
                       background: "#fff",
                       border:
@@ -772,7 +1156,8 @@ export default function StorefrontClient() {
                             height: "8px",
                             border:
                               "1px solid #12b76a",
-                            display: "inline-block",
+                            display:
+                              "inline-block",
                             borderRadius:
                               "2px",
                           }}
@@ -791,8 +1176,7 @@ export default function StorefrontClient() {
                       {product.description && (
                         <p
                           style={{
-                            margin:
-                              "7px 0 0",
+                            margin: "7px 0 0",
                             color: "#858a94",
                             fontSize: "11px",
                             lineHeight: 1.5,
@@ -824,38 +1208,41 @@ export default function StorefrontClient() {
                         </div>
 
                         <button
- onClick={(event) => {
-  event.stopPropagation();
+                          onClick={(event) => {
+                            event.stopPropagation();
 
-  router.push(
-    `/restaurant/${restaurantSlug}/product/${product.slug}`
-  );
-}}
-  disabled={
-    !product.is_available ||
-    !restaurant.accept_orders
-  }
-  style={{
-    border: "none",
-    background:
-      !product.is_available ||
-      !restaurant.accept_orders
-        ? "#d0d5dd"
-        : accent,
-    color: "#fff",
-    padding: "8px 12px",
-    borderRadius: "7px",
-    cursor:
-      !product.is_available ||
-      !restaurant.accept_orders
-        ? "not-allowed"
-        : "pointer",
-    fontSize: "11px",
-    fontWeight: "600",
-  }}
->
-  {product.is_available ? "View" : "Unavailable"}
-</button>
+                            router.push(
+  `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
+                            );
+                          }}
+                          disabled={
+                            !product.is_available ||
+                            !restaurant.accept_orders
+                          }
+                          style={{
+                            border: "none",
+                            background:
+                              !product.is_available ||
+                              !restaurant.accept_orders
+                                ? "#d0d5dd"
+                                : accent,
+                            color: "#fff",
+                            padding:
+                              "8px 12px",
+                            borderRadius: "7px",
+                            cursor:
+                              !product.is_available ||
+                              !restaurant.accept_orders
+                                ? "not-allowed"
+                                : "pointer",
+                            fontSize: "11px",
+                            fontWeight: "600",
+                          }}
+                        >
+                          {product.is_available
+                            ? "View"
+                            : "Unavailable"}
+                        </button>
                       </div>
                     </div>
                   </div>
