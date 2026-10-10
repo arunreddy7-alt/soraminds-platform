@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function GET() {
   try {
-    // Verify the platform owner
+    // 1. Verify the authenticated Supabase user.
     const supabase = await createClient();
 
     const {
@@ -15,31 +15,49 @@ export async function GET() {
     if (authError || !user) {
       return NextResponse.json(
         { error: "Unauthorized." },
-        { status: 401 }
+        {
+          status: 401,
+          headers: { "Cache-Control": "private, no-store" },
+        }
       );
     }
 
+    // 2. Verify active platform membership server-side.
+    const admin = createAdminClient();
+
     const { data: platformUser, error: platformError } =
-      await supabase
+      await admin
         .from("platform_users")
         .select("id, is_active")
         .eq("auth_user_id", user.id)
         .maybeSingle();
 
-    if (
-      platformError ||
-      !platformUser ||
-      !platformUser.is_active
-    ) {
+    if (platformError) {
+      console.error(
+        "Platform membership verification failed:",
+        platformError
+      );
+
       return NextResponse.json(
-        { error: "Unauthorized." },
-        { status: 401 }
+        { error: "Unable to verify platform access." },
+        {
+          status: 500,
+          headers: { "Cache-Control": "private, no-store" },
+        }
       );
     }
 
-    // Use the service-role client only on the server
-    const admin = createAdminClient();
+    if (!platformUser || !platformUser.is_active) {
+      return NextResponse.json(
+        { error: "Forbidden." },
+        {
+          status: 403,
+          headers: { "Cache-Control": "private, no-store" },
+        }
+      );
+    }
 
+    // 3. Load platform dashboard statistics.
     const [
       restaurantsResult,
       activeRestaurantsResult,
@@ -80,9 +98,7 @@ export async function GET() {
       recentRestaurantsResult,
     ];
 
-    const failedResult = results.find(
-      (result) => result.error
-    );
+    const failedResult = results.find((result) => result.error);
 
     if (failedResult?.error) {
       console.error(
@@ -92,25 +108,37 @@ export async function GET() {
 
       return NextResponse.json(
         { error: "Failed to load dashboard statistics." },
-        { status: 500 }
+        {
+          status: 500,
+          headers: { "Cache-Control": "private, no-store" },
+        }
       );
     }
 
-    return NextResponse.json({
-      stats: {
-        totalRestaurants: restaurantsResult.count ?? 0,
-        activeRestaurants: activeRestaurantsResult.count ?? 0,
-        totalOrders: ordersResult.count ?? 0,
-        totalStaff: staffResult.count ?? 0,
+    return NextResponse.json(
+      {
+        stats: {
+          totalRestaurants: restaurantsResult.count ?? 0,
+          activeRestaurants: activeRestaurantsResult.count ?? 0,
+          totalOrders: ordersResult.count ?? 0,
+          totalStaff: staffResult.count ?? 0,
+        },
+        recentRestaurants: recentRestaurantsResult.data ?? [],
       },
-      recentRestaurants: recentRestaurantsResult.data ?? [],
-    });
+      {
+        status: 200,
+        headers: { "Cache-Control": "private, no-store" },
+      }
+    );
   } catch (error) {
     console.error("Platform dashboard error:", error);
 
     return NextResponse.json(
       { error: "Failed to load platform dashboard." },
-      { status: 500 }
+      {
+        status: 500,
+        headers: { "Cache-Control": "private, no-store" },
+      }
     );
   }
 }

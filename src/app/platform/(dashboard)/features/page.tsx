@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
 type Restaurant = {
   id: number;
@@ -76,7 +75,6 @@ export default function FeaturesPage() {
   bar: false,
   live_entertainment: false,
 });
-const supabase = createClient();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -110,46 +108,31 @@ const supabase = createClient();
     setLoading(true);
     setError("");
 
-    const { data, error: restaurantsError } = await supabase
-      .from("restaurants")
-      .select(`
-        id,
-        name,
-        slug,
-        is_active,
-        features
-      `)
-      .order("created_at", {
-        ascending: false,
-      });
+    const response = await fetch("/api/platform/restaurants/list", {
+      method: "GET",
+      cache: "no-store",
+    });
 
-    if (restaurantsError) {
-      console.error(
-        "Failed to load restaurants:",
-        restaurantsError
-      );
+    const result = await response.json();
 
-      setError(
-        restaurantsError.message ||
-          "Failed to load restaurants."
-      );
-
-      return;
+    if (!response.ok) {
+      throw new Error(result?.error || "Failed to load restaurants.");
     }
 
-    const restaurantList: Restaurant[] = data || [];
+    const restaurantList: Restaurant[] = result.restaurants ?? [];
 
     setRestaurants(restaurantList);
 
     if (restaurantList.length > 0) {
-      setSelectedRestaurantId(
-        String(restaurantList[0].id)
-      );
+      setSelectedRestaurantId(String(restaurantList[0].id));
+    } else {
+      setSelectedRestaurantId("");
     }
   } catch (err) {
-    console.error(err);
-
-    setError("Failed to load restaurants.");
+    console.error("Failed to load restaurants:", err);
+    setError(
+      err instanceof Error ? err.message : "Failed to load restaurants."
+    );
   } finally {
     setLoading(false);
   }

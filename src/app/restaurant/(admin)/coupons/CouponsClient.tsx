@@ -32,6 +32,9 @@ export default function CouponsClient() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const [canManageCoupons, setCanManageCoupons] = useState(false);
+  const [permissionLoaded, setPermissionLoaded] = useState(false);
+
   const [showModal, setShowModal] = useState(false);
   const [editingCoupon, setEditingCoupon] =
     useState<Coupon | null>(null);
@@ -49,6 +52,52 @@ export default function CouponsClient() {
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  useEffect(() => {
+  let active = true;
+
+  async function loadCouponPermission() {
+    try {
+      const response = await fetch("/api/restaurant/me", {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("Unable to load permissions.");
+      }
+
+      const data = await response.json();
+
+      const isOwner = data.role?.name === "OWNER";
+
+      const couponAccess =
+        data.permissions?.find(
+          (permission: { module: string; access: string }) =>
+            permission.module === "coupons"
+        )?.access ?? "NONE";
+
+      if (active) {
+        setCanManageCoupons(isOwner || couponAccess === "FULL");
+      }
+    } catch (error) {
+      console.error("Failed to load coupon permissions:", error);
+
+      if (active) {
+        setCanManageCoupons(false);
+      }
+    } finally {
+      if (active) {
+        setPermissionLoaded(true);
+      }
+    }
+  }
+
+  loadCouponPermission();
+
+  return () => {
+    active = false;
+  };
+}, []);
 
   useEffect(() => {
     loadData();
@@ -206,6 +255,10 @@ export default function CouponsClient() {
   }
 
   async function handleSave() {
+    if (!permissionLoaded || !canManageCoupons) {
+  setError("You don't have permission to manage coupons.");
+  return;
+}
     try {
       setError("");
       setSuccess("");
@@ -333,50 +386,37 @@ export default function CouponsClient() {
         updated_at: now,
       };
 
-      if (editingCoupon) {
-        const { error: updateError } = await supabase
-          .from("coupons")
-          .update({
-            code: payload.code,
-            discount_type: payload.discount_type,
-            discount_value: payload.discount_value,
-            min_order_amount: payload.min_order_amount,
-            max_discount: payload.max_discount,
-            start_at: payload.start_at,
-            end_at: payload.end_at,
-            usage_limit: payload.usage_limit,
-            updated_at: payload.updated_at,
-          })
-          .eq("id", editingCoupon.id)
-          .eq("restaurant_id", restaurantId);
+      
+const response = await fetch("/api/restaurant/coupons", {
+  method: editingCoupon ? "PATCH" : "POST",
+  headers: {
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    ...(editingCoupon ? { couponId: editingCoupon.id } : {}),
+    code: payload.code,
+    discount_type: payload.discount_type,
+    discount_value: payload.discount_value,
+    min_order_amount: payload.min_order_amount,
+    max_discount: payload.max_discount,
+    start_at: payload.start_at,
+    end_at: payload.end_at,
+    usage_limit: payload.usage_limit,
+  }),
+});
 
-        if (updateError) {
-          throw updateError;
-        }
+const result = await response.json();
 
-        setSuccess("Coupon updated successfully.");
-      } else {
-        const { error: insertError } = await supabase
-          .from("coupons")
-          .insert({
-            ...payload,
-            used_count: 0,
-            is_active: true,
-            created_at: now,
-          });
+if (!response.ok) {
+  throw new Error(result.error || "Failed to save coupon.");
+}
 
-        if (insertError) {
-          if (insertError.code === "23505") {
-            throw new Error(
-              "A coupon with this code already exists."
-            );
-          }
+setSuccess(
+  editingCoupon
+    ? "Coupon updated successfully."
+    : "Coupon created successfully."
+);
 
-          throw insertError;
-        }
-
-        setSuccess("Coupon created successfully.");
-      }
 
       setShowModal(false);
       resetForm();
@@ -390,40 +430,51 @@ export default function CouponsClient() {
     }
   }
 
-  async function toggleCouponStatus(coupon: Coupon) {
-    try {
-      setError("");
+  
+async function toggleCouponStatus(coupon: Coupon) {
+  try {
+    setError("");
+    setSuccess("");
 
-      const { error: updateError } = await supabase
-        .from("coupons")
-        .update({
+    const response = await fetch(
+      `/api/restaurant/coupons/${coupon.id}/status`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
           is_active: !coupon.is_active,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", coupon.id)
-        .eq("restaurant_id", restaurantId);
-
-      if (updateError) {
-        throw updateError;
+        }),
       }
+    );
 
-      setCoupons((current) =>
-        current.map((item) =>
-          item.id === coupon.id
-            ? {
-                ...item,
-                is_active: !item.is_active,
-              }
-            : item
-        )
-      );
-    } catch (err: any) {
-      console.error(err);
-      setError(
-        err?.message || "Failed to update coupon status."
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || "Failed to update coupon status."
       );
     }
+
+    setCoupons((current) =>
+      current.map((item) =>
+        item.id === coupon.id
+          ? {
+              ...item,
+              is_active: result.coupon.is_active,
+            }
+          : item
+      )
+    );
+
+    setSuccess(result.message || "Coupon status updated successfully.");
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to update coupon status.");
   }
+}
+
 
   function formatPrice(value: number) {
     return `₹${Number(value).toFixed(2)}`;
@@ -544,7 +595,7 @@ export default function CouponsClient() {
             {restaurantName ? ` for ${restaurantName}` : ""}
           </p>
         </div>
-
+        {canManageCoupons && (
         <button
           onClick={openCreateModal}
           style={{
@@ -559,7 +610,7 @@ export default function CouponsClient() {
           }}
         >
           + Create Coupon
-        </button>
+        </button>)}
       </div>
 
       {/* ALERTS */}
@@ -749,7 +800,7 @@ export default function CouponsClient() {
           >
             Create your first discount coupon.
           </div>
-
+            {canManageCoupons && (
           <button
             onClick={openCreateModal}
             style={{
@@ -763,7 +814,7 @@ export default function CouponsClient() {
             }}
           >
             Create Coupon
-          </button>
+          </button>)}
         </div>
       ) : filteredCoupons.length === 0 ? (
         <div
@@ -1039,6 +1090,7 @@ export default function CouponsClient() {
                     marginTop: "16px",
                   }}
                 >
+                  {canManageCoupons && (
                   <button
                     onClick={() => openEditModal(coupon)}
                     style={{
@@ -1054,8 +1106,8 @@ export default function CouponsClient() {
                     }}
                   >
                     Edit
-                  </button>
-
+                  </button>)}
+                    {canManageCoupons && (
                   <button
                     onClick={() =>
                       toggleCouponStatus(coupon)
@@ -1077,7 +1129,7 @@ export default function CouponsClient() {
                     {coupon.is_active
                       ? "Deactivate"
                       : "Activate"}
-                  </button>
+                  </button>)}
                 </div>
               </div>
             );

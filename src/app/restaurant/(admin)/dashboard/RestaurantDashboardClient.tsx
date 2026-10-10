@@ -134,6 +134,7 @@ function getGreeting() {
 
 export default function RestaurantDashboardClient() {
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
+  const [greeting, setGreeting] = useState("Hello");
 
   const [todayOrders, setTodayOrders] = useState<DashboardOrder[]>([]);
   const [todayCustomers, setTodayCustomers] = useState<Customer[]>([]);
@@ -150,6 +151,10 @@ export default function RestaurantDashboardClient() {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+  setGreeting(getGreeting());
+}, []);
 
   useEffect(() => {
     async function loadDashboard() {
@@ -542,7 +547,7 @@ export default function RestaurantDashboardClient() {
               color: "#858a94",
             }}
           >
-            {getGreeting()}
+            {greeting}
             {restaurant ? `, ${restaurant.name}` : ""}
           </p>
         </div>

@@ -39,13 +39,34 @@ export default function PlatformLogin() {
         return;
       }
 
-      if (!data.user) {
-        setError("Unable to sign in.");
-        return;
-      }
+      
+if (!data.user) {
+  setError("Unable to sign in.");
+  return;
+}
 
-      router.push("/platform");
-      router.refresh();
+const accessResponse = await fetch("/api/platform/auth/check", {
+  method: "GET",
+  cache: "no-store",
+});
+
+const accessResult = await accessResponse.json();
+
+if (!accessResponse.ok || !accessResult.authorized) {
+  await supabase.auth.signOut();
+
+  setError(
+    accessResponse.status === 403
+      ? "These credentials are not authorized for the platform. Please use your restaurant login."
+      : "Unable to verify platform access. Please try again."
+  );
+
+  return;
+}
+
+router.replace("/platform");
+router.refresh();
+
     } catch (err) {
       console.error(
         "Platform login error:",

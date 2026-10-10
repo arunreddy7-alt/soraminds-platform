@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
 type Product = {
   id: number;
@@ -41,7 +40,9 @@ type SelectedProduct = {
 };
 
 export default function CombosClient() {
-  const supabase = createClient();
+
+  const [canManageCombos, setCanManageCombos] = useState(false);
+  const [permissionLoaded, setPermissionLoaded] = useState(false);
 
   const [restaurantId, setRestaurantId] = useState<number | null>(null);
   const [restaurantName, setRestaurantName] = useState("");
@@ -75,108 +76,76 @@ export default function CombosClient() {
   }, []);
 
   async function loadData() {
+  try {
+    setLoading(true);
+    setError("");
+
+    const response = await fetch("/api/restaurant/combos", {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to load combos.");
+    }
+
+    setRestaurantName(result.restaurantName || "");
+    setProducts(result.products || []);
+    setCombos(result.combos || []);
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to load combos.");
+  } finally {
+    setLoading(false);
+  }
+}
+useEffect(() => {
+  let cancelled = false;
+
+  async function loadPermissions() {
     try {
-      setLoading(true);
-      setError("");
+      const response = await fetch("/api/restaurant/me", {
+        cache: "no-store",
+      });
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      const result = await response.json();
 
-      if (userError) {
-        throw userError;
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to load permissions.");
       }
 
-      if (!user) {
-        throw new Error("You are not logged in.");
+      const isOwner = result.role?.name === "OWNER";
+
+      const hasFullAccess = (result.permissions || []).some(
+        (permission: { module: string; access: string }) =>
+          permission.module === "combos" &&
+          permission.access === "FULL"
+      );
+
+      if (!cancelled) {
+        setCanManageCombos(isOwner || hasFullAccess);
       }
+    } catch (err) {
+      console.error("Failed to load combo permissions:", err);
 
-      const { data: userData, error: userDataError } = await supabase
-        .from("users")
-        .select("restaurant_id")
-        .eq("auth_user_id", user.id)
-        .eq("is_active", true)
-        .single();
-
-      if (userDataError) {
-        throw userDataError;
+      if (!cancelled) {
+        setCanManageCombos(false);
       }
-
-      if (!userData?.restaurant_id) {
-        throw new Error("Restaurant could not be found.");
-      }
-
-      const currentRestaurantId = userData.restaurant_id;
-
-      setRestaurantId(currentRestaurantId);
-
-      const [restaurantResult, productsResult, combosResult] =
-        await Promise.all([
-          supabase
-            .from("restaurants")
-            .select("name")
-            .eq("id", currentRestaurantId)
-            .single(),
-
-          supabase
-            .from("products")
-            .select(
-              "id, restaurant_id, name, price, image_url, is_available, is_active"
-            )
-            .eq("restaurant_id", currentRestaurantId)
-            .eq("is_active", true)
-            .order("name"),
-
-          supabase
-            .from("combos")
-            .select(
-              `
-                id,
-                restaurant_id,
-                name,
-                description,
-                image_url,
-                combo_price,
-                original_price,
-                is_active,
-                created_at,
-                updated_at,
-                combo_items (
-                  id,
-                  combo_id,
-                  product_id,
-                  quantity,
-                  is_active
-                )
-              `
-            )
-            .eq("restaurant_id", currentRestaurantId)
-            .order("created_at", { ascending: false }),
-        ]);
-
-      if (restaurantResult.error) {
-        throw restaurantResult.error;
-      }
-
-      if (productsResult.error) {
-        throw productsResult.error;
-      }
-
-      if (combosResult.error) {
-        throw combosResult.error;
-      }
-
-      setRestaurantName(restaurantResult.data?.name || "");
-      setProducts(productsResult.data || []);
-      setCombos((combosResult.data as Combo[]) || []);
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Failed to load combos.");
     } finally {
-      setLoading(false);
+      if (!cancelled) {
+        setPermissionLoaded(true);
+      }
     }
   }
+
+  loadPermissions();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
 
   function resetForm() {
     setName("");
@@ -296,242 +265,181 @@ export default function CombosClient() {
   const inactiveCombos = combos.filter((combo) => !combo.is_active);
 
   async function handleImageUpload(
-    event: React.ChangeEvent<HTMLInputElement>
-  ) {
-    try {
-      const file = event.target.files?.[0];
+  event: React.ChangeEvent<HTMLInputElement>
+) {
+  try {
+    const file = event.target.files?.[0];
 
-      if (!file) return;
+    if (!file) return;
 
-      if (!file.type.startsWith("image/")) {
-        setError("Please select an image file.");
-        return;
-      }
-
-      if (file.size > 5 * 1024 * 1024) {
-        setError("Image must be smaller than 5MB.");
-        return;
-      }
-
-      setUploadingImage(true);
-      setError("");
-
-      const extension =
-        file.name.split(".").pop()?.toLowerCase() || "jpg";
-
-      const fileName = `combo-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 10)}.${extension}`;
-
-      const filePath = `combos/${restaurantId}/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("menu-images")
-        .upload(filePath, file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
-
-      if (uploadError) {
-        throw uploadError;
-      }
-
-      const { data } = supabase.storage
-        .from("menu-images")
-        .getPublicUrl(filePath);
-
-      setImageUrl(data.publicUrl);
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Image upload failed.");
-    } finally {
-      setUploadingImage(false);
-
-      event.target.value = "";
+    if (
+      !["image/jpeg", "image/png", "image/webp"].includes(file.type)
+    ) {
+      setError("Please select a JPEG, PNG, or WebP image.");
+      return;
     }
+
+    if (file.size === 0 || file.size > 5 * 1024 * 1024) {
+      setError("Image must be larger than 0 bytes and no bigger than 5 MB.");
+      return;
+    }
+
+    setUploadingImage(true);
+    setError("");
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(
+      "/api/restaurant/combos/image/upload",
+      {
+        method: "POST",
+        body: formData,
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Image upload failed.");
+    }
+
+    if (!result.image_url) {
+      throw new Error("The server did not return an image URL.");
+    }
+
+    setImageUrl(result.image_url);
+    setSuccess("Combo image uploaded successfully.");
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Image upload failed.");
+  } finally {
+    setUploadingImage(false);
+    event.target.value = "";
   }
+}
 
   async function handleSave() {
-    try {
-      setError("");
-      setSuccess("");
+    if (!permissionLoaded || !canManageCombos) {
+  setError("You don't have permission to manage combos.");
+  return;
+}
+  try {
+    setError("");
+    setSuccess("");
 
-      if (!restaurantId) {
-        setError("Restaurant not found.");
-        return;
-      }
-
-      if (!name.trim()) {
-        setError("Combo name is required.");
-        return;
-      }
-
-      if (selectedProducts.length === 0) {
-        setError("Select at least one product.");
-        return;
-      }
-
-      if (numericComboPrice <= 0) {
-        setError("Combo price must be greater than 0.");
-        return;
-      }
-
-      if (originalPrice <= 0) {
-        setError("Original price must be greater than 0.");
-        return;
-      }
-
-      if (numericComboPrice >= originalPrice) {
-        setError(
-          "Combo price should be lower than the original price."
-        );
-        return;
-      }
-
-      setSaving(true);
-
-      if (editingCombo) {
-        const { error: comboError } = await supabase
-          .from("combos")
-          .update({
-            name: name.trim(),
-            description: description.trim() || null,
-            image_url: imageUrl || null,
-            combo_price: numericComboPrice,
-            original_price: originalPrice,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", editingCombo.id)
-          .eq("restaurant_id", restaurantId);
-
-        if (comboError) {
-          throw comboError;
-        }
-
-        const { error: deactivateError } = await supabase
-          .from("combo_items")
-          .update({
-            is_active: false,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("combo_id", editingCombo.id);
-
-        if (deactivateError) {
-          throw deactivateError;
-        }
-
-        const now = new Date().toISOString();
-
-        const itemsToInsert = selectedProducts.map((item) => ({
-          combo_id: editingCombo.id,
-          product_id: item.product_id,
-          quantity: item.quantity,
-          is_active: true,
-          created_at: now,
-          updated_at: now,
-        }));
-
-        const { error: itemError } = await supabase
-          .from("combo_items")
-          .insert(itemsToInsert);
-
-        if (itemError) {
-          throw itemError;
-        }
-
-        setSuccess("Combo updated successfully.");
-      } else {
-        const now = new Date().toISOString();
-
-        const { data: newCombo, error: comboError } =
-          await supabase
-            .from("combos")
-            .insert({
-              restaurant_id: restaurantId,
-              name: name.trim(),
-              description: description.trim() || null,
-              image_url: imageUrl || null,
-              combo_price: numericComboPrice,
-              original_price: originalPrice,
-              is_active: true,
-              created_at: now,
-              updated_at: now,
-            })
-            .select("id")
-            .single();
-
-        if (comboError) {
-          throw comboError;
-        }
-
-        if (!newCombo) {
-          throw new Error("Combo was created but ID was not returned.");
-        }
-
-        const itemsToInsert = selectedProducts.map((item) => ({
-          combo_id: newCombo.id,
-          product_id: item.product_id,
-          quantity: item.quantity,
-          is_active: true,
-          created_at: now,
-          updated_at: now,
-        }));
-
-        const { error: itemError } = await supabase
-          .from("combo_items")
-          .insert(itemsToInsert);
-
-        if (itemError) {
-          throw itemError;
-        }
-
-        setSuccess("Combo created successfully.");
-      }
-
-      setShowModal(false);
-      resetForm();
-
-      await loadData();
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Failed to save combo.");
-    } finally {
-      setSaving(false);
+    if (!name.trim()) {
+      setError("Combo name is required.");
+      return;
     }
+
+    if (selectedProducts.length === 0) {
+      setError("Select at least one product.");
+      return;
+    }
+
+    if (numericComboPrice <= 0) {
+      setError("Combo price must be greater than 0.");
+      return;
+    }
+
+    if (originalPrice <= 0) {
+      setError("Original price must be greater than 0.");
+      return;
+    }
+
+    if (numericComboPrice >= originalPrice) {
+      setError("Combo price should be lower than the original price.");
+      return;
+    }
+
+    setSaving(true);
+
+    const isEditing = Boolean(editingCombo);
+
+    const url = isEditing
+      ? `/api/restaurant/combos/${editingCombo!.id}`
+      : "/api/restaurant/combos";
+
+    const response = await fetch(url, {
+      method: isEditing ? "PATCH" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ...(isEditing ? { action: "update" } : {}),
+        name: name.trim(),
+        description: description.trim(),
+        image_url: imageUrl || null,
+        combo_price: numericComboPrice,
+        items: selectedProducts.map((item) => ({
+          product_id: item.product_id,
+          quantity: item.quantity,
+        })),
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to save combo.");
+    }
+
+    setSuccess(
+      isEditing
+        ? "Combo updated successfully."
+        : "Combo created successfully."
+    );
+
+    setShowModal(false);
+    resetForm();
+
+    await loadData();
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to save combo.");
+  } finally {
+    setSaving(false);
   }
+}
 
   async function toggleComboStatus(combo: Combo) {
-    try {
-      setError("");
+  try {
+    setError("");
+    setSuccess("");
 
-      const { error } = await supabase
-        .from("combos")
-        .update({
+    const response = await fetch(
+      `/api/restaurant/combos/${combo.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "toggle",
           is_active: !combo.is_active,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", combo.id)
-        .eq("restaurant_id", restaurantId);
-
-      if (error) {
-        throw error;
+        }),
       }
+    );
 
-      setCombos((current) =>
-        current.map((item) =>
-          item.id === combo.id
-            ? {
-                ...item,
-                is_active: !item.is_active,
-              }
-            : item
-        )
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || "Failed to update combo status."
       );
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Failed to update combo status.");
     }
+
+    setSuccess(
+      `Combo ${!combo.is_active ? "activated" : "deactivated"} successfully.`
+    );
+
+    await loadData();
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to update combo status.");
   }
+}
 
   function getComboItems(combo: Combo) {
     return (
@@ -612,7 +520,7 @@ export default function CombosClient() {
             {restaurantName ? ` for ${restaurantName}` : ""}
           </p>
         </div>
-
+            {canManageCombos && (
         <button
           onClick={openCreateModal}
           style={{
@@ -627,7 +535,7 @@ export default function CombosClient() {
           }}
         >
           + Create Combo
-        </button>
+        </button>)}
       </div>
 
       {/* ALERTS */}
@@ -790,7 +698,7 @@ export default function CombosClient() {
           >
             Create your first combo by bundling products together.
           </div>
-
+            {canManageCombos && (
           <button
             onClick={openCreateModal}
             style={{
@@ -804,7 +712,7 @@ export default function CombosClient() {
             }}
           >
             Create Combo
-          </button>
+          </button>)}
         </div>
       ) : (
         <div
@@ -1041,6 +949,7 @@ export default function CombosClient() {
                       marginTop: "15px",
                     }}
                   >
+                     {canManageCombos && (
                     <button
                       onClick={() => openEditModal(combo)}
                       style={{
@@ -1056,7 +965,7 @@ export default function CombosClient() {
                       }}
                     >
                       Edit
-                    </button>
+                    </button>)}
 
                     <button
                       onClick={() => toggleComboStatus(combo)}
@@ -1692,7 +1601,12 @@ export default function CombosClient() {
 
                 <button
                   onClick={handleSave}
-                  disabled={saving || uploadingImage}
+                  disabled={
+  saving ||
+  uploadingImage ||
+  !permissionLoaded ||
+  !canManageCombos
+}
                   style={{
                     border: "none",
                     background:

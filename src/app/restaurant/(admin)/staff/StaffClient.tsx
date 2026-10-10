@@ -540,34 +540,39 @@ export default function StaffClient() {
     role: Role
   ) => {
     try {
-      const response = await fetch(
-        `/api/restaurant/staff/roles/${role.id}/permissions`,
-        {
-          cache: "no-store",
-        }
-      );
+     const response = await fetch(
+  `/api/restaurant/staff/roles/${role.id}/permissions`,
+  {
+    method: "GET",
+    cache: "no-store",
+  }
+);
 
-      const data = await response.json();
+const responseText = await response.text();
 
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-            "Unable to load permissions."
-        );
-      }
+let data: any;
 
-      const existing =
-        data.permissions || [];
+try {
+  data = JSON.parse(responseText);
+} catch {
+  console.error("Permissions API returned HTML:", responseText);
+  throw new Error(
+    `Permissions API returned a non-JSON response (HTTP ${response.status}). Check the Next.js terminal for the actual error.`
+  );
+}
 
-      const permissionMap =
-        new Map(
-          existing.map(
-            (permission: Permission) => [
-              permission.module,
-              permission.access,
-            ]
-          )
-        );
+if (!response.ok) {
+  throw new Error(data.error || "Unable to load permissions.");
+}
+
+const existingPermissions = data.permissions ?? [];
+
+const permissionMap = new Map(
+  existingPermissions.map((permission: Permission) => [
+    permission.module,
+    permission.access,
+  ])
+);
 
       const completePermissions =
         MODULES.map((module) => ({

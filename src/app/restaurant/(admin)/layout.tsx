@@ -1,3 +1,4 @@
+
 "use client";
 
 import {
@@ -12,71 +13,26 @@ import RestaurantHeader from "@/components/restaurant/RestaurantHeader";
 
 type PermissionAccess = "FULL" | "VIEW" | "NONE";
 
-type Permissions = Record<
-  string,
-  PermissionAccess
->;
+type Permissions = Record<string, PermissionAccess>;
 
 const routePermissions: {
   prefix: string;
   module: string;
 }[] = [
-  {
-    prefix: "/restaurant/dashboard",
-    module: "dashboard",
-  },
-  {
-    prefix: "/restaurant/orders",
-    module: "orders",
-  },
-  {
-    prefix: "/restaurant/customers",
-    module: "customers",
-  },
-  {
-    prefix: "/restaurant/menu",
-    module: "menu",
-  },
-  {
-    prefix: "/restaurant/combos",
-    module: "combos",
-  },
-  {
-    prefix: "/restaurant/promotions",
-    module: "promotions",
-  },
-  {
-    prefix: "/restaurant/coupons",
-    module: "coupons",
-  },
-  {
-    prefix: "/restaurant/tables",
-    module: "tables",
-  },
-  {
-    prefix: "/restaurant/qr-codes",
-    module: "qr_codes",
-  },
-  {
-    prefix: "/restaurant/reviews",
-    module: "reviews",
-  },
-  {
-    prefix: "/restaurant/analytics",
-    module: "analytics",
-  },
-  {
-    prefix: "/restaurant/reports",
-    module: "reports",
-  },
-  {
-    prefix: "/restaurant/staff",
-    module: "staff",
-  },
-  {
-    prefix: "/restaurant/settings",
-    module: "settings",
-  },
+  { prefix: "/restaurant/dashboard", module: "dashboard" },
+  { prefix: "/restaurant/orders", module: "orders" },
+  { prefix: "/restaurant/customers", module: "customers" },
+  { prefix: "/restaurant/menu", module: "menu" },
+  { prefix: "/restaurant/combos", module: "combos" },
+  { prefix: "/restaurant/promotions", module: "promotions" },
+  { prefix: "/restaurant/coupons", module: "coupons" },
+  { prefix: "/restaurant/tables", module: "tables" },
+  { prefix: "/restaurant/qr-codes", module: "qr_codes" },
+  { prefix: "/restaurant/reviews", module: "reviews" },
+  { prefix: "/restaurant/analytics", module: "analytics" },
+  { prefix: "/restaurant/reports", module: "reports" },
+  { prefix: "/restaurant/staff", module: "staff" },
+  { prefix: "/restaurant/settings", module: "settings" },
 ];
 
 export default function RestaurantLayout({
@@ -87,197 +43,91 @@ export default function RestaurantLayout({
   const router = useRouter();
   const pathname = usePathname();
 
-  const [checkingAuth, setCheckingAuth] =
-    useState(true);
-
-  const [permissions, setPermissions] =
-    useState<Permissions>({});
-
-  const [isOwner, setIsOwner] =
-    useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [permissions, setPermissions] = useState<Permissions>({});
+  const [isOwner, setIsOwner] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function checkAuth() {
-      const supabase = createClient();
+      try {
+        const response = await fetch("/api/restaurant/me", {
+          method: "GET",
+          cache: "no-store",
+          credentials: "same-origin",
+        });
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            const supabase = createClient();
+            await supabase.auth.signOut();
 
-      if (!user) {
-        router.replace("/restaurant/login");
-        return;
-      }
+            if (!cancelled) {
+              router.replace("/restaurant/login");
+            }
+            return;
+          }
 
-      const {
-        data: restaurantUser,
-      } = await supabase
-        .from("users")
-        .select(
-          "id, restaurant_id, role_id, is_active"
-        )
-        .eq(
-          "auth_user_id",
-          user.id
-        )
-        .maybeSingle();
-
-      if (
-        !restaurantUser ||
-        !restaurantUser.is_active ||
-        !restaurantUser.restaurant_id
-      ) {
-        await supabase.auth.signOut();
-        router.replace("/restaurant/login");
-        return;
-      }
-
-      const {
-        data: restaurant,
-      } = await supabase
-        .from("restaurants")
-        .select(
-          "id, is_active"
-        )
-        .eq(
-          "id",
-          restaurantUser.restaurant_id
-        )
-        .maybeSingle();
-
-      if (
-        !restaurant ||
-        !restaurant.is_active
-      ) {
-        await supabase.auth.signOut();
-        router.replace("/restaurant/login");
-        return;
-      }
-
-      const {
-        data: role,
-      } = await supabase
-        .from("roles")
-        .select(
-          "id, name"
-        )
-        .eq(
-          "id",
-          restaurantUser.role_id
-        )
-        .maybeSingle();
-
-      if (!role) {
-        await supabase.auth.signOut();
-        router.replace("/restaurant/login");
-        return;
-      }
-
-      const owner =
-        role.name === "OWNER";
-
-      setIsOwner(owner);
-
-      if (owner) {
-        setCheckingAuth(false);
-        return;
-      }
-
-      const {
-        data: permissionRows,
-        error: permissionError,
-      } = await supabase
-        .from("permissions")
-        .select(
-          "module, access"
-        )
-        .eq(
-          "role_id",
-          restaurantUser.role_id
-        );
-
-      if (permissionError) {
-        console.error(
-          "Failed to load permissions:",
-          permissionError
-        );
-
-        setPermissions({});
-      } else {
-        const permissionMap: Permissions =
-          {};
-
-        for (
-          const permission of
-            permissionRows || []
-        ) {
-          permissionMap[
-            permission.module
-          ] =
-            permission.access as PermissionAccess;
+          throw new Error("Unable to verify restaurant access");
         }
 
-        setPermissions(
-          permissionMap
-        );
-      }
+        const result = await response.json();
 
-      setCheckingAuth(false);
+        if (cancelled) return;
+
+        const owner = result.role?.name === "OWNER";
+        setIsOwner(owner);
+
+        if (owner) {
+          setPermissions({});
+        } else {
+          const permissionMap: Permissions = {};
+
+          for (const permission of result.permissions ?? []) {
+            permissionMap[permission.module] =
+              permission.access as PermissionAccess;
+          }
+
+          setPermissions(permissionMap);
+        }
+
+        setCheckingAuth(false);
+      } catch (error) {
+        console.error("Restaurant authentication failed:", error);
+
+        if (!cancelled) {
+          setCheckingAuth(false);
+          router.replace("/restaurant/login");
+        }
+      }
     }
 
     checkAuth();
+
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
-  /*
-   * Protect direct URL access.
-   *
-   * Sidebar visibility alone is not enough.
-   * A staff member shouldn't be able to manually
-   * enter a URL for a module they don't have access to.
-   */
   useEffect(() => {
-    if (checkingAuth) {
-      return;
-    }
+    if (checkingAuth || isOwner) return;
 
-    if (isOwner) {
-      return;
-    }
+    const matchedRoute = routePermissions.find(
+      (route) =>
+        pathname === route.prefix ||
+        pathname.startsWith(`${route.prefix}/`)
+    );
 
-    const matchedRoute =
-      routePermissions.find(
-        (route) =>
-          pathname === route.prefix ||
-          pathname.startsWith(
-            `${route.prefix}/`
-          )
-      );
+    if (!matchedRoute) return;
 
-    if (!matchedRoute) {
-      return;
-    }
-
-    const access =
-      permissions[
-        matchedRoute.module
-      ];
-
-    const canView =
-      access === "FULL" ||
-      access === "VIEW";
+    const access = permissions[matchedRoute.module];
+    const canView = access === "FULL" || access === "VIEW";
 
     if (!canView) {
-      router.replace(
-        "/restaurant/dashboard"
-      );
+      router.replace("/restaurant/dashboard");
     }
-  }, [
-    pathname,
-    permissions,
-    isOwner,
-    checkingAuth,
-    router,
-  ]);
+  }, [pathname, permissions, isOwner, checkingAuth, router]);
 
   if (checkingAuth) {
     return (
@@ -312,8 +162,7 @@ export default function RestaurantLayout({
               width: "240px",
               minHeight: "100vh",
               background: "#ffffff",
-              borderRight:
-                "1px solid #e7e9ed",
+              borderRight: "1px solid #e7e9ed",
             }}
           />
         }
@@ -324,19 +173,10 @@ export default function RestaurantLayout({
         />
       </Suspense>
 
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-        }}
-      >
+      <div style={{ flex: 1, minWidth: 0 }}>
         <RestaurantHeader />
 
-        <main
-          style={{
-            padding: "24px",
-          }}
-        >
+        <main style={{ padding: "24px" }}>
           {children}
         </main>
       </div>

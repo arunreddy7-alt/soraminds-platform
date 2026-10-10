@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import QRCode from "qrcode";
-import { createClient } from "@/lib/supabase/client";
 
 type Table = {
   id: number;
@@ -30,10 +29,9 @@ type QRItem = QRCodeRecord & {
 };
 
 export default function QRCodesClient() {
-  const supabase = createClient();
 
-  const [restaurantId, setRestaurantId] =
-    useState<number | null>(null);
+  const [canManageQR, setCanManageQR] = useState(false);
+  const [permissionLoaded, setPermissionLoaded] = useState(false);
 
   const [tables, setTables] = useState<Table[]>([]);
   const [qrCodes, setQrCodes] = useState<QRItem[]>([]);
@@ -52,136 +50,102 @@ export default function QRCodesClient() {
     Record<number, string>
   >({});
 
-  const getRestaurant = async () => {
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
+const loadQRCodes = async () => {
+  try {
+    setLoading(true);
+    setError("");
 
-    if (authError || !user) {
-      throw new Error("You are not authenticated.");
+    const response = await fetch("/api/restaurant/qr-codes", {
+      cache: "no-store",
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to load QR codes.");
     }
 
-    const { data, error: userError } = await supabase
-      .from("users")
-      .select("restaurant_id, is_active")
-      .eq("auth_user_id", user.id)
-      .maybeSingle();
+    const tableData: Table[] = result.tables || [];
+    const qrData: QRCodeRecord[] = result.qrCodes || [];
 
-    if (userError) {
-      throw new Error(userError.message);
-    }
+    setTables(tableData);
 
-    if (
-      !data ||
-      !data.restaurant_id ||
-      !data.is_active
-    ) {
-      throw new Error(
-        "Restaurant user account is invalid."
-      );
-    }
+    const tableMap = new Map(
+      tableData.map((table) => [table.id, table])
+    );
 
-    return data.restaurant_id;
-  };
+    const dineIn: QRItem[] = [];
+    let takeaway: QRItem | null = null;
 
-  const loadQRCodes = async () => {
-    try {
-      setLoading(true);
-      setError("");
-
-      const currentRestaurantId =
-        await getRestaurant();
-
-      setRestaurantId(currentRestaurantId);
-
-      const { data: tableData, error: tableError } =
-        await supabase
-          .from("tables")
-          .select(
-            "id, table_number, seats, status"
-          )
-          .eq(
-            "restaurant_id",
-            currentRestaurantId
-          )
-          .order("table_number", {
-            ascending: true,
-          });
-
-      if (tableError) {
-        throw new Error(tableError.message);
-      }
-
-      setTables(tableData || []);
-
-      const { data: qrData, error: qrError } =
-        await supabase
-          .from("qr_codes")
-          .select(
-            "id, restaurant_id, table_id, code, is_active, created_at, updated_at"
-          )
-          .eq(
-            "restaurant_id",
-            currentRestaurantId
-          )
-          .order("id", {
-            ascending: true,
-          });
-
-      if (qrError) {
-        throw new Error(qrError.message);
-      }
-
-      const tableMap = new Map(
-        (tableData || []).map((table) => [
-          table.id,
-          table,
-        ])
-      );
-
-      const dineIn: QRItem[] = [];
-      let takeaway: QRItem | null = null;
-
-      (qrData || []).forEach((qr) => {
-        if (qr.table_id === null) {
-          takeaway = {
-            ...qr,
-            qr_type: "TAKEAWAY",
-          };
-
-          return;
-        }
-
-        const table = tableMap.get(qr.table_id);
-
-        if (!table) return;
-
-        dineIn.push({
+    qrData.forEach((qr) => {
+      if (qr.table_id === null) {
+        takeaway = {
           ...qr,
-          table_number: table.table_number,
-          seats: table.seats,
-          table_status: table.status,
-          qr_type: "DINE_IN",
-        });
+          qr_type: "TAKEAWAY",
+        };
+        return;
+      }
+
+      const table = tableMap.get(qr.table_id);
+      if (!table) return;
+
+      dineIn.push({
+        ...qr,
+        table_number: table.table_number,
+        seats: table.seats,
+        table_status: table.status,
+        qr_type: "DINE_IN",
+      });
+    });
+
+    setQrCodes(dineIn);
+    setTakeawayQR(takeaway);
+  } catch (err) {
+    setError(
+      err instanceof Error ? err.message : "Unable to load QR codes."
+    );
+  } finally {
+    setLoading(false);
+  }
+};
+
+useEffect(() => {
+  const initialize = async () => {
+    try {
+      const response = await fetch("/api/restaurant/me", {
+        cache: "no-store",
       });
 
-      setQrCodes(dineIn);
-      setTakeawayQR(takeaway);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to load QR codes."
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Unable to verify permissions.");
+      }
+
+      const isOwner = result.role?.name === "OWNER";
+      const permissions = result.permissions || [];
+
+      const qrPermission = permissions.find(
+        (permission: { module: string; access: string }) =>
+          permission.module === "qr_codes"
       );
-    } finally {
+
+      setCanManageQR(isOwner || qrPermission?.access === "FULL");
+      setPermissionLoaded(true);
+
+      await loadQRCodes();
+    } catch (err) {
+      setPermissionLoaded(true);
+      setCanManageQR(false);
+      setError(
+        err instanceof Error ? err.message : "Unable to initialize QR codes."
+      );
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadQRCodes();
-  }, []);
+  initialize();
+}, []);
 
   const availableTables = useMemo(() => {
     const generatedTableIds = new Set(
@@ -241,273 +205,181 @@ export default function QRCodesClient() {
     }
   }, [qrCodes, takeawayQR, loading]);
 
-  const generateTableQR = async (tableId: number) => {
-    if (!restaurantId) return;
+const generateTableQR = async (tableId: number) => {
+  try {
+    setActionLoading(tableId);
+    setError("");
 
-    try {
-      setActionLoading(tableId);
-      setError("");
+    const response = await fetch("/api/restaurant/qr-codes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "DINE_IN",
+        table_id: tableId,
+      }),
+    });
 
-      const existing = await supabase
-        .from("qr_codes")
-        .select("id")
-        .eq(
-          "restaurant_id",
-          restaurantId
-        )
-        .eq("table_id", tableId)
-        .maybeSingle();
+    const result = await response.json();
 
-      if (existing.error) {
-        throw new Error(
-          existing.error.message
-        );
-      }
-
-      if (existing.data) {
-        await loadQRCodes();
-        return;
-      }
-
-      const code = crypto.randomUUID().replace(
-        /-/g,
-        ""
-      );
-
-      const now =
-        new Date().toISOString();
-
-      const { error: insertError } =
-        await supabase
-          .from("qr_codes")
-          .insert({
-            restaurant_id: restaurantId,
-            table_id: tableId,
-            code,
-            is_active: true,
-            created_at: now,
-            updated_at: now,
-          });
-
-      if (insertError) {
-        throw new Error(
-          insertError.message
-        );
-      }
-
-      await loadQRCodes();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to generate QR code."
-      );
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const regenerateTableQR = async (
-    qr: QRItem
-  ) => {
-    if (!restaurantId || !qr.table_id) {
-      return;
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to generate QR code.");
     }
 
-    const confirmed = window.confirm(
-      "Regenerate this QR code? The old QR code will stop working."
+    await loadQRCodes();
+  } catch (err) {
+    setError(
+      err instanceof Error ? err.message : "Unable to generate QR code."
+    );
+  } finally {
+    setActionLoading(null);
+  }
+};
+
+const regenerateTableQR = async (qr: QRItem) => {
+  if (!qr.table_id) return;
+
+  const confirmed = window.confirm(
+    "Regenerate this QR code? The old QR code will stop working."
+  );
+
+  if (!confirmed) return;
+
+  try {
+    setActionLoading(qr.id);
+    setError("");
+
+    const response = await fetch(`/api/restaurant/qr-codes/${qr.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "regenerate" }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to regenerate QR code.");
+    }
+
+    setQrImages((current) => {
+      const updated = { ...current };
+      delete updated[qr.id];
+      return updated;
+    });
+
+    await loadQRCodes();
+  } catch (err) {
+    setError(
+      err instanceof Error ? err.message : "Unable to regenerate QR code."
+    );
+  } finally {
+    setActionLoading(null);
+  }
+};
+
+const generateTakeawayQR = async () => {
+  try {
+    setTakeawayLoading(true);
+    setError("");
+
+    const response = await fetch("/api/restaurant/qr-codes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "TAKEAWAY" }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to generate takeaway QR.");
+    }
+
+    await loadQRCodes();
+  } catch (err) {
+    setError(
+      err instanceof Error ? err.message : "Unable to generate takeaway QR."
+    );
+  } finally {
+    setTakeawayLoading(false);
+  }
+};
+
+
+const regenerateTakeawayQR = async () => {
+  if (!takeawayQR) return;
+
+  const confirmed = window.confirm(
+    "Regenerate the takeaway QR code? The old QR code will stop working."
+  );
+
+  if (!confirmed) return;
+
+  try {
+    setTakeawayLoading(true);
+    setError("");
+
+    const response = await fetch(
+      `/api/restaurant/qr-codes/${takeawayQR.id}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "regenerate" }),
+      }
     );
 
-    if (!confirmed) return;
+    const result = await response.json();
 
-    try {
-      setActionLoading(qr.id);
-      setError("");
-
-      const newCode =
-        crypto.randomUUID().replace(
-          /-/g,
-          ""
-        );
-
-      const { error: updateError } =
-        await supabase
-          .from("qr_codes")
-          .update({
-            code: newCode,
-            is_active: true,
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq("id", qr.id)
-          .eq(
-            "restaurant_id",
-            restaurantId
-          )
-          .eq("table_id", qr.table_id);
-
-      if (updateError) {
-        throw new Error(
-          updateError.message
-        );
-      }
-
-      await loadQRCodes();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to regenerate QR code."
-      );
-    } finally {
-      setActionLoading(null);
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to regenerate takeaway QR.");
     }
-  };
 
-  const generateTakeawayQR = async () => {
-    if (!restaurantId) return;
+    setQrImages((current) => {
+      const updated = { ...current };
+      delete updated[takeawayQR.id];
+      return updated;
+    });
 
-    try {
-      setTakeawayLoading(true);
-      setError("");
+    await loadQRCodes();
+  } catch (err) {
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to regenerate takeaway QR."
+    );
+  } finally {
+    setTakeawayLoading(false);
+  }
+};
 
-      if (takeawayQR) {
-        return;
-      }
 
-      const code =
-        crypto.randomUUID().replace(
-          /-/g,
-          ""
-        );
+const toggleQR = async (qr: QRItem) => {
+  try {
+    setActionLoading(qr.id);
+    setError("");
 
-      const now =
-        new Date().toISOString();
+    const response = await fetch(`/api/restaurant/qr-codes/${qr.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "toggle",
+        is_active: !qr.is_active,
+      }),
+    });
 
-      const { error: insertError } =
-        await supabase
-          .from("qr_codes")
-          .insert({
-            restaurant_id: restaurantId,
-            table_id: null,
-            code,
-            is_active: true,
-            created_at: now,
-            updated_at: now,
-          });
+    const result = await response.json();
 
-      if (insertError) {
-        throw new Error(
-          insertError.message
-        );
-      }
-
-      await loadQRCodes();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to generate takeaway QR."
-      );
-    } finally {
-      setTakeawayLoading(false);
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to update QR status.");
     }
-  };
 
-  const regenerateTakeawayQR =
-    async () => {
-      if (!restaurantId || !takeawayQR) {
-        return;
-      }
-
-      const confirmed = window.confirm(
-        "Regenerate the takeaway QR code? The old QR code will stop working."
-      );
-
-      if (!confirmed) return;
-
-      try {
-        setTakeawayLoading(true);
-        setError("");
-
-        const newCode =
-          crypto.randomUUID().replace(
-            /-/g,
-            ""
-          );
-
-        const { error: updateError } =
-          await supabase
-            .from("qr_codes")
-            .update({
-              code: newCode,
-              is_active: true,
-              updated_at:
-                new Date().toISOString(),
-            })
-            .eq("id", takeawayQR.id)
-            .eq(
-              "restaurant_id",
-              restaurantId
-            )
-            .is("table_id", null);
-
-        if (updateError) {
-          throw new Error(
-            updateError.message
-          );
-        }
-
-        await loadQRCodes();
-      } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unable to regenerate takeaway QR."
-        );
-      } finally {
-        setTakeawayLoading(false);
-      }
-    };
-
-  const toggleQR = async (qr: QRItem) => {
-    if (!restaurantId) return;
-
-    try {
-      setActionLoading(qr.id);
-      setError("");
-
-      const { error: updateError } =
-        await supabase
-          .from("qr_codes")
-          .update({
-            is_active: !qr.is_active,
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq("id", qr.id)
-          .eq(
-            "restaurant_id",
-            restaurantId
-          );
-
-      if (updateError) {
-        throw new Error(
-          updateError.message
-        );
-      }
-
-      await loadQRCodes();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to update QR status."
-      );
-    } finally {
-      setActionLoading(null);
-    }
-  };
+    await loadQRCodes();
+  } catch (err) {
+    setError(
+      err instanceof Error ? err.message : "Unable to update QR status."
+    );
+  } finally {
+    setActionLoading(null);
+  }
+};
 
   const downloadQR = async (
     qr: QRItem
@@ -808,6 +680,7 @@ export default function QRCodesClient() {
               marginTop: "14px",
             }}
           >
+            {permissionLoaded && canManageQR && (
             <button
               onClick={() =>
                 downloadQR(qr)
@@ -834,7 +707,7 @@ export default function QRCodesClient() {
               }}
             >
               Download
-            </button>
+            </button>)}
 
             <button
               onClick={() =>

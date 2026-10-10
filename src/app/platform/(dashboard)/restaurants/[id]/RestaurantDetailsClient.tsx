@@ -32,6 +32,10 @@ export default function RestaurantDetailsClient() {
   const params = useParams();
   const router = useRouter();
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteConfirmStep, setDeleteConfirmStep] = useState(1);
+  const [deleteConfirmName, setDeleteConfirmName] = useState("");
+
   const restaurantId = params.id as string;
 
   const [restaurant, setRestaurant] =
@@ -128,52 +132,90 @@ export default function RestaurantDetailsClient() {
     }
   }
 
-  async function handleDelete() {
-    if (!restaurant || actionLoading) {
-      return;
-    }
+  async function handleDeactivateInstead() {
+  if (!restaurant || actionLoading) return;
 
-    const confirmed = window.confirm(
-      `Are you sure you want to permanently delete "${restaurant.name}"? This action cannot be undone.`
+  try {
+    setActionLoading(true);
+    setError("");
+
+    const response = await fetch(
+      `/api/platform/restaurants/${restaurant.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          is_active: false,
+        }),
+      }
     );
 
-    if (!confirmed) {
-      return;
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Failed to deactivate restaurant."
+      );
     }
 
-    try {
-      setActionLoading(true);
-      setError("");
+    setRestaurant(data);
+    setDeleteModalOpen(false);
+    setDeleteConfirmStep(1);
+    setDeleteConfirmName("");
+  } catch (err) {
+    console.error(err);
 
-      const response = await fetch(
-        `/api/platform/restaurants/${restaurant.id}`,
-        {
-          method: "DELETE",
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Failed to delete restaurant."
-        );
-      }
-
-      router.replace("/platform/restaurants");
-      router.refresh();
-    } catch (err) {
-      console.error(err);
-
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to delete restaurant."
-      );
-
-      setActionLoading(false);
-    }
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Failed to deactivate restaurant."
+    );
+  } finally {
+    setActionLoading(false);
   }
+}
+
+  async function handleDelete() {
+  if (!restaurant || actionLoading) return;
+
+  if (deleteConfirmName.trim() !== restaurant.name) {
+    setError("Enter the exact restaurant name to confirm deletion.");
+    return;
+  }
+
+  try {
+    setActionLoading(true);
+    setError("");
+
+    const response = await fetch(
+      `/api/platform/restaurants/${restaurant.id}`,
+      { method: "DELETE" }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Failed to delete restaurant."
+      );
+    }
+
+    router.replace("/platform/restaurants");
+    router.refresh();
+  } catch (err) {
+    console.error(err);
+
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Failed to delete restaurant."
+    );
+  } finally {
+    setActionLoading(false);
+  }
+}
 
   if (loading) {
     return (
@@ -397,7 +439,12 @@ export default function RestaurantDetailsClient() {
           </button>
 
           <button
-            onClick={handleDelete}
+           onClick={() => {
+  setError("");
+  setDeleteConfirmStep(1);
+  setDeleteConfirmName("");
+  setDeleteModalOpen(true);
+}}
             disabled={actionLoading}
             style={{
               border: "none",
@@ -605,6 +652,322 @@ export default function RestaurantDetailsClient() {
           />
         </div>
       </section>
+      {deleteModalOpen && restaurant && (
+  <div
+    onClick={(event) => {
+      if (event.target === event.currentTarget && !actionLoading) {
+        setDeleteModalOpen(false);
+        setDeleteConfirmStep(1);
+        setDeleteConfirmName("");
+      }
+    }}
+    style={{
+      position: "fixed",
+      inset: 0,
+      zIndex: 1000,
+      background: "rgba(15, 23, 42, 0.6)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "20px",
+    }}
+  >
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-restaurant-title"
+      style={{
+        width: "100%",
+        maxWidth: "480px",
+        background: "#ffffff",
+        borderRadius: "16px",
+        padding: "28px",
+        boxShadow: "0 24px 80px rgba(0,0,0,0.2)",
+        boxSizing: "border-box",
+      }}
+    >
+      <div
+        style={{
+          width: "46px",
+          height: "46px",
+          borderRadius: "12px",
+          background: "#fef2f2",
+          color: "#b42318",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: "23px",
+          marginBottom: "18px",
+        }}
+      >
+        !
+      </div>
+
+      <h2
+        id="delete-restaurant-title"
+        style={{
+          margin: "0 0 10px",
+          fontSize: "22px",
+          fontWeight: 700,
+          color: "#111827",
+        }}
+      >
+        {deleteConfirmStep === 1
+          ? "Delete this restaurant?"
+          : "Confirm permanent deletion"}
+      </h2>
+
+      {deleteConfirmStep === 1 ? (
+        <>
+          <p
+            style={{
+              margin: "0 0 20px",
+              fontSize: "14px",
+              lineHeight: 1.7,
+              color: "#6b7280",
+            }}
+          >
+            Choose what you want to do with{" "}
+            <strong style={{ color: "#111827" }}>
+              {restaurant.name}
+            </strong>
+            .
+          </p>
+
+          <div
+            style={{
+              border: "1px solid #fecaca",
+              borderRadius: "12px",
+              padding: "16px",
+              marginBottom: "14px",
+            }}
+          >
+            <h3
+              style={{
+                margin: "0 0 6px",
+                fontSize: "15px",
+                color: "#b42318",
+              }}
+            >
+              Permanently delete
+            </h3>
+
+            <p
+              style={{
+                margin: "0 0 14px",
+                fontSize: "13px",
+                lineHeight: 1.6,
+                color: "#6b7280",
+              }}
+            >
+              Permanently removes the restaurant, its order
+              history, and associated database records.
+              This cannot be undone.
+            </p>
+
+            <button
+              type="button"
+              disabled={actionLoading}
+              onClick={() => {
+                setError("");
+                setDeleteConfirmStep(2);
+              }}
+              style={{
+                width: "100%",
+                border: "none",
+                borderRadius: "8px",
+                padding: "11px",
+                background: "#b42318",
+                color: "#ffffff",
+                fontWeight: 600,
+                cursor: actionLoading ? "not-allowed" : "pointer",
+              }}
+            >
+              Continue to permanent deletion
+            </button>
+          </div>
+
+          <div
+            style={{
+              border: "1px solid #d1fae5",
+              borderRadius: "12px",
+              padding: "16px",
+              marginBottom: "20px",
+            }}
+          >
+            <h3
+              style={{
+                margin: "0 0 6px",
+                fontSize: "15px",
+                color: "#027a48",
+              }}
+            >
+              Deactivate instead
+            </h3>
+
+            <p
+              style={{
+                margin: "0 0 14px",
+                fontSize: "13px",
+                lineHeight: 1.6,
+                color: "#6b7280",
+              }}
+            >
+              Preserve order history and restaurant records
+              while marking this restaurant inactive.
+            </p>
+
+            <button
+              type="button"
+              disabled={actionLoading}
+              onClick={handleDeactivateInstead}
+              style={{
+                width: "100%",
+                border: "1px solid #a7f3d0",
+                borderRadius: "8px",
+                padding: "11px",
+                background: "#ecfdf5",
+                color: "#027a48",
+                fontWeight: 600,
+                cursor: actionLoading ? "not-allowed" : "pointer",
+              }}
+            >
+              {actionLoading ? "Processing..." : "Deactivate restaurant"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p
+            style={{
+              margin: "0 0 16px",
+              fontSize: "14px",
+              lineHeight: 1.7,
+              color: "#6b7280",
+            }}
+          >
+            This will permanently remove{" "}
+            <strong style={{ color: "#111827" }}>
+              {restaurant.name}
+            </strong>
+            , including its orders and associated records.
+            Type the restaurant's exact name below to confirm.
+          </p>
+
+          <label
+            htmlFor="delete-restaurant-name"
+            style={{
+              display: "block",
+              fontSize: "13px",
+              fontWeight: 600,
+              color: "#374151",
+              marginBottom: "7px",
+            }}
+          >
+            Restaurant name
+          </label>
+
+          <input
+            id="delete-restaurant-name"
+            autoComplete="off"
+            value={deleteConfirmName}
+            onChange={(event) =>
+              setDeleteConfirmName(event.target.value)
+            }
+            placeholder={restaurant.name}
+            disabled={actionLoading}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              border: "1px solid #d1d5db",
+              borderRadius: "8px",
+              padding: "12px",
+              marginBottom: "18px",
+              fontSize: "14px",
+              color: "#111827",
+            }}
+          />
+
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button
+              type="button"
+              disabled={actionLoading}
+              onClick={() => {
+                setDeleteConfirmStep(1);
+                setDeleteConfirmName("");
+                setError("");
+              }}
+              style={{
+                flex: 1,
+                border: "1px solid #d1d5db",
+                borderRadius: "8px",
+                padding: "11px",
+                background: "#ffffff",
+                color: "#374151",
+                fontWeight: 600,
+                cursor: actionLoading ? "not-allowed" : "pointer",
+              }}
+            >
+              Back
+            </button>
+
+            <button
+              type="button"
+              disabled={
+                actionLoading ||
+                deleteConfirmName.trim() !== restaurant.name
+              }
+              onClick={handleDelete}
+              style={{
+                flex: 1,
+                border: "none",
+                borderRadius: "8px",
+                padding: "11px",
+                background:
+                  actionLoading ||
+                  deleteConfirmName.trim() !== restaurant.name
+                    ? "#fca5a5"
+                    : "#b42318",
+                color: "#ffffff",
+                fontWeight: 600,
+                cursor:
+                  actionLoading ||
+                  deleteConfirmName.trim() !== restaurant.name
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              {actionLoading ? "Deleting..." : "Delete permanently"}
+            </button>
+          </div>
+        </>
+      )}
+
+      <button
+        type="button"
+        disabled={actionLoading}
+        onClick={() => {
+          setDeleteModalOpen(false);
+          setDeleteConfirmStep(1);
+          setDeleteConfirmName("");
+          setError("");
+        }}
+        style={{
+          width: "100%",
+          marginTop: "12px",
+          padding: "10px",
+          border: "none",
+          background: "transparent",
+          color: "#6b7280",
+          fontSize: "13px",
+          cursor: actionLoading ? "not-allowed" : "pointer",
+        }}
+      >
+        Cancel
+      </button>
+    </div>
+  </div>
+)}
     </div>
   );
 }
@@ -759,6 +1122,7 @@ function FeatureCard({
       >
         {enabled ? "ON" : "OFF"}
       </div>
+      
     </div>
   );
 }

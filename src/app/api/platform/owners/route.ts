@@ -2,77 +2,86 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+const privateHeaders = {
+  "Cache-Control": "private, no-store",
+};
+
 async function requirePlatformOwner() {
   const supabase = await createClient();
 
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser();
 
-  if (!user) {
-    return null;
+  if (authError || !user) {
+    return { authorized: false as const, error: "unauthorized" };
   }
 
-  const { data: platformUser, error } = await supabase
+  const admin = createAdminClient();
+
+  const { data: platformUser, error } = await admin
     .from("platform_users")
-    .select("id, is_active, auth_user_id")
+    .select("id, is_active")
     .eq("auth_user_id", user.id)
     .maybeSingle();
 
-  if (
-    error ||
-    !platformUser ||
-    !platformUser.is_active
-  ) {
-    return null;
+  if (error) {
+    console.error("Platform membership verification failed:", error);
+    return { authorized: false as const, error: "internal" };
   }
 
-  return platformUser;
+  if (!platformUser || !platformUser.is_active) {
+    return { authorized: false as const, error: "unauthorized" };
+  }
+
+  return { authorized: true as const };
 }
 
 export async function GET() {
   try {
-    const platformUser = await requirePlatformOwner();
+    const access = await requirePlatformOwner();
 
-    if (!platformUser) {
+    if (!access.authorized) {
       return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
+        {
+          error:
+            access.error === "internal"
+              ? "Unable to verify platform access."
+              : "Unauthorized.",
+        },
+        {
+          status: access.error === "internal" ? 500 : 401,
+          headers: privateHeaders,
+        }
       );
     }
 
     const admin = createAdminClient();
 
-    const { data: owners, error: ownersError } =
-      await admin
-        .from("users")
-        .select(
-          "id, restaurant_id, full_name, email, phone, is_active, auth_user_id, role_id"
-        )
-        .eq("role_id", 3)
-        .order("created_at", {
-          ascending: false,
-        });
+    const { data: owners, error: ownersError } = await admin
+      .from("users")
+      .select(
+        "id, restaurant_id, full_name, email, phone, is_active, role_id, created_at"
+      )
+      .eq("role_id", 3)
+      .order("created_at", { ascending: false });
 
     if (ownersError) {
-      console.error(
-        "Failed to load owners:",
-        ownersError
-      );
+      console.error("Failed to load owners:", ownersError);
 
       return NextResponse.json(
-        {
-          error: ownersError.message,
-        },
-        { status: 500 }
+        { error: "Failed to load restaurant owners." },
+        { status: 500, headers: privateHeaders }
       );
     }
 
+    const ownerRows = owners ?? [];
     const restaurantIds = [
       ...new Set(
-        (owners || [])
+        ownerRows
           .map((owner) => owner.restaurant_id)
-          .filter(Boolean)
+          .filter((id): id is number => id !== null)
       ),
     ];
 
@@ -96,14 +105,12 @@ export async function GET() {
         );
 
         return NextResponse.json(
-          {
-            error: restaurantError.message,
-          },
-          { status: 500 }
+          { error: "Failed to load owner restaurants." },
+          { status: 500, headers: privateHeaders }
         );
       }
 
-      restaurants = restaurantData || [];
+      restaurants = restaurantData ?? [];
     }
 
     const restaurantMap = new Map(
@@ -113,10 +120,8 @@ export async function GET() {
       ])
     );
 
-    const result = (owners || []).map((owner) => {
-      const restaurant = restaurantMap.get(
-        owner.restaurant_id
-      );
+    const result = ownerRows.map((owner) => {
+      const restaurant = restaurantMap.get(owner.restaurant_id);
 
       return {
         id: owner.id,
@@ -125,29 +130,22 @@ export async function GET() {
         email: owner.email,
         phone: owner.phone,
         is_active: owner.is_active,
-        auth_user_id: owner.auth_user_id,
         role_id: owner.role_id,
-        restaurant_name:
-          restaurant?.name || "Unknown Restaurant",
-        restaurant_slug:
-          restaurant?.slug || "—",
+        restaurant_name: restaurant?.name ?? "Unknown Restaurant",
+        restaurant_slug: restaurant?.slug ?? "—",
       };
     });
 
-    return NextResponse.json({
-      owners: result,
-    });
-  } catch (error) {
-    console.error(
-      "Platform owners GET error:",
-      error
+    return NextResponse.json(
+      { owners: result },
+      { status: 200, headers: privateHeaders }
     );
+  } catch (error) {
+    console.error("Platform owners GET error:", error);
 
     return NextResponse.json(
-      {
-        error: "Failed to load restaurant owners.",
-      },
-      { status: 500 }
+      { error: "Failed to load restaurant owners." },
+      { status: 500, headers: privateHeaders }
     );
   }
 }

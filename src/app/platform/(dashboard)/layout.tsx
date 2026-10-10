@@ -1,12 +1,17 @@
 import { Suspense } from "react";
+import { connection } from "next/server";
 import PlatformSidebar from "@/components/platform/PlatformSidebar";
 import PlatformHeader from "@/components/platform/PlatformHeader";
+import { requirePlatformOwner } from "@/lib/auth/platform";
 
-export default function PlatformDashboardLayout({
+async function ProtectedPlatformContent({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  await connection();
+  await requirePlatformOwner();
+
   return (
     <div
       style={{
@@ -50,5 +55,17 @@ export default function PlatformDashboardLayout({
         </main>
       </div>
     </div>
+  );
+}
+
+export default function PlatformDashboardLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <Suspense fallback={<div style={{ minHeight: "100vh" }} />}>
+      <ProtectedPlatformContent>{children}</ProtectedPlatformContent>
+    </Suspense>
   );
 }

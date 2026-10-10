@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 
 type Restaurant = {
   id: number;
@@ -23,7 +22,6 @@ type Restaurant = {
 
 export default function Restaurants() {
   const router = useRouter();
-  const supabase = createClient();
 
   const [restaurants, setRestaurants] = useState<
     Restaurant[]
@@ -34,57 +32,34 @@ export default function Restaurants() {
   const [search, setSearch] = useState("");
 
   const loadRestaurants = async () => {
-    try {
-      setLoading(true);
-      setError("");
+  try {
+    setLoading(true);
+    setError("");
 
-      const { data, error: restaurantsError } =
-        await supabase
-          .from("restaurants")
-          .select(
-            `
-              id,
-    name,
-    slug,
-    phone,
-    cuisine,
-    accent_color,
-    accept_orders,
-    is_active,
-    features,
-    created_at,
-    updated_at
-            `
-          )
-          .order("created_at", {
-            ascending: false,
-          });
+    const response = await fetch("/api/platform/restaurants/list", {
+      method: "GET",
+      cache: "no-store",
+    });
 
-      if (restaurantsError) {
-        console.error(
-          "Failed to load restaurants:",
-          restaurantsError
-        );
+    const result = await response.json();
 
-        setError(
-          restaurantsError.message ||
-            "Failed to load restaurants."
-        );
-
-        return;
-      }
-
-      setRestaurants(data || []);
-    } catch (err) {
-      console.error(err);
-
-      setError(
-        "Failed to load restaurants."
-      );
-    } finally {
-      setLoading(false);
+    if (!response.ok) {
+      throw new Error(result?.error || "Failed to load restaurants.");
     }
-  };
+
+    setRestaurants(result.restaurants ?? []);
+  } catch (err) {
+    console.error("Failed to load restaurants:", err);
+
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Failed to load restaurants."
+    );
+  } finally {
+    setLoading(false);
+  }
+};
 
   useEffect(() => {
     loadRestaurants();

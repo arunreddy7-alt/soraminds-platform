@@ -118,6 +118,49 @@ export default function MenuClient() {
 
   const [error, setError] = useState("");
 
+  // Menu write controls are enabled only after the server confirms permission.
+  const [canManageMenu, setCanManageMenu] = useState(false);
+  const [permissionLoaded, setPermissionLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMenuPermission() {
+      try {
+        const response = await fetch("/api/restaurant/me", {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          if (!cancelled) setCanManageMenu(false);
+          return;
+        }
+
+        const result = await response.json();
+        const roleName = String(result?.role?.name || "").toUpperCase();
+        const menuPermission = (result?.permissions || []).find(
+          (permission: { module?: string; access?: string }) =>
+            String(permission.module || "").toLowerCase() === "menu"
+        );
+        const access = String(menuPermission?.access || "NONE").toUpperCase();
+
+        if (!cancelled) {
+          setCanManageMenu(roleName === "OWNER" || access === "FULL");
+        }
+      } catch {
+        if (!cancelled) setCanManageMenu(false);
+      } finally {
+        if (!cancelled) setPermissionLoaded(true);
+      }
+    }
+
+    loadMenuPermission();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function getRestaurantId() {
     const supabase = createClient();
 
@@ -235,7 +278,8 @@ export default function MenuClient() {
     availabilityFilter,
   ]);
 
-  async function saveCategory(
+  
+async function saveCategory(
   name: string,
   description: string
 ) {
@@ -243,52 +287,50 @@ export default function MenuClient() {
     return;
   }
 
-  const supabase = createClient();
-  const now = new Date().toISOString();
-
-  if (editingCategory) {
-    const { error: updateError } = await supabase
-      .from("categories")
-      .update({
-        name: name.trim(),
-        slug: slugify(name),
-        description: description.trim() || null,
-        updated_at: now,
-      })
-      .eq("id", editingCategory.id)
-      .eq("restaurant_id", restaurantId);
-
-    if (updateError) {
-      setError(updateError.message);
-      return;
-    }
-  } else {
-    const { error: insertError } = await supabase
-      .from("categories")
-      .insert({
-        restaurant_id: restaurantId,
-        name: name.trim(),
-        slug: slugify(name),
-        description: description.trim() || null,
-        sort_order: categories.length,
-        is_active: true,
-        created_at: now,
-        updated_at: now,
-      });
-
-    if (insertError) {
-      setError(insertError.message);
-      return;
-    }
-  }
-
-  setShowCategoryModal(false);
-  setEditingCategory(null);
   setError("");
 
-  await loadMenu(restaurantId);
+  try {
+    const isEditing = !!editingCategory;
+
+    const response = await fetch(
+      "/api/restaurant/menu/categories",
+      {
+        method: isEditing ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...(isEditing
+            ? { categoryId: editingCategory.id }
+            : {}),
+          name: name.trim(),
+          description: description.trim(),
+        }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      setError(
+        result.error || "Failed to save category."
+      );
+      return;
+    }
+
+    setShowCategoryModal(false);
+    setEditingCategory(null);
+    setError("");
+
+    await loadMenu(restaurantId);
+  } catch (error) {
+    console.error("Save category error:", error);
+    setError("Something went wrong while saving the category.");
+  }
 }
-  async function saveProduct(product: {
+
+  
+async function saveProduct(product: {
   name: string;
   description: string;
   category_id: number;
@@ -298,106 +340,105 @@ export default function MenuClient() {
   is_vegetarian: boolean;
   is_available: boolean;
 }) {
-  if (!restaurantId) {
+  if (!restaurantId || !product.name.trim()) {
     return;
   }
 
-  const supabase = createClient();
-  const now = new Date().toISOString();
-
-  if (editingProduct) {
-    const { error: updateError } = await supabase
-      .from("products")
-      .update({
-        category_id: product.category_id,
-        name: product.name.trim(),
-        slug: slugify(product.name),
-        description:
-          product.description.trim() || null,
-        price: product.price,
-        mrp: product.mrp,
-        image_url:
-          product.image_url.trim() || null,
-        is_vegetarian: product.is_vegetarian,
-        is_available: product.is_available,
-        updated_at: now,
-      })
-      .eq("id", editingProduct.id)
-      .eq("restaurant_id", restaurantId);
-
-    if (updateError) {
-      setError(updateError.message);
-      return;
-    }
-  } else {
-    const { error: insertError } = await supabase
-      .from("products")
-      .insert({
-        restaurant_id: restaurantId,
-        category_id: product.category_id,
-        name: product.name.trim(),
-        slug: slugify(product.name),
-        description:
-          product.description.trim() || null,
-        price: product.price,
-        mrp: product.mrp,
-        image_url:
-          product.image_url.trim() || null,
-        is_vegetarian: product.is_vegetarian,
-        is_available: product.is_available,
-        is_active: true,
-        created_at: now,
-        updated_at: now,
-      });
-
-    if (insertError) {
-      setError(insertError.message);
-      return;
-    }
-  }
-
-  setShowProductModal(false);
-  setEditingProduct(null);
   setError("");
 
-  await loadMenu(restaurantId);
-}
+  try {
+    const isEditing = !!editingProduct;
 
-  async function toggleAvailability(
-    product: Product
-  ) {
-    if (!restaurantId) {
+    const response = await fetch(
+      "/api/restaurant/menu/products",
+      {
+        method: isEditing ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          ...(isEditing
+            ? { productId: editingProduct.id }
+            : {}),
+          name: product.name.trim(),
+          description: product.description.trim(),
+          category_id: product.category_id,
+          price: product.price,
+          mrp: product.mrp,
+          image_url: product.image_url.trim(),
+          is_vegetarian: product.is_vegetarian,
+          is_available: product.is_available,
+        }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      setError(
+        result.error || "Failed to save product."
+      );
       return;
     }
 
-    const supabase = createClient();
+    setShowProductModal(false);
+    setEditingProduct(null);
+    setError("");
 
-    const { error: updateError } = await supabase
-      .from("products")
-      .update({
-        is_available: !product.is_available,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", product.id)
-      .eq("restaurant_id", restaurantId);
+    await loadMenu(restaurantId);
+  } catch (error) {
+    console.error("Save product error:", error);
+    setError("Something went wrong while saving the product.");
+  }
+}
 
-    if (updateError) {
-      setError(updateError.message);
+
+  
+async function toggleAvailability(product: Product) {
+  if (!restaurantId || !canManageMenu) {
+    return;
+  }
+
+  const nextAvailability = !product.is_available;
+
+  try {
+    const response = await fetch(
+      `/api/restaurant/menu/products/${product.id}/availability`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          is_available: nextAvailability,
+        }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      setError(
+        result.error || "Failed to update availability."
+      );
       return;
     }
 
     setProducts((current) =>
       current.map((item) =>
         item.id === product.id
-          ? {
-              ...item,
-              is_available:
-                !item.is_available,
-            }
+          ? { ...item, is_available: nextAvailability }
           : item
       )
     );
+
+    setError("");
+  } catch (error) {
+    console.error("Toggle availability error:", error);
+    setError("Something went wrong updating availability.");
   }
+}
+
 
   async function loadVariants(productId: number) {
     const supabase = createClient();
@@ -421,25 +462,32 @@ export default function MenuClient() {
     setVariants(data || []);
   }
 
-  async function deleteVariant(variantId: number) {
-    const supabase = createClient();
+ 
+async function deleteVariant(variantId: number) {
+  try {
+    const response = await fetch(
+      `/api/restaurant/menu/variants/${variantId}`,
+      { method: "DELETE" }
+    );
 
-    const { error: deleteError } = await supabase
-      .from("product_variants")
-      .delete()
-      .eq("id", variantId);
+    const result = await response.json();
 
-    if (deleteError) {
-      setError(deleteError.message);
+    if (!response.ok) {
+      setError(result.error || "Failed to delete variant.");
       return;
     }
 
     setVariants((current) =>
-      current.filter(
-        (variant) => variant.id !== variantId
-      )
+      current.filter((variant) => variant.id !== variantId)
     );
+
+    setError("");
+  } catch (error) {
+    console.error("Delete variant error:", error);
+    setError("Something went wrong deleting the variant.");
   }
+}
+
 
   const categoryMap = useMemo(() => {
     return new Map(
@@ -498,6 +546,7 @@ export default function MenuClient() {
             gap: "8px",
           }}
         >
+          {permissionLoaded && canManageMenu && (
           <button
             onClick={() => {
               setEditingCategory(null);
@@ -516,7 +565,9 @@ export default function MenuClient() {
           >
             + Category
           </button>
+          )}
 
+          {permissionLoaded && canManageMenu && (
           <button
             onClick={() => {
               setEditingProduct(null);
@@ -535,6 +586,7 @@ export default function MenuClient() {
           >
             + Product
           </button>
+          )}
         </div>
       </div>
 
@@ -623,6 +675,7 @@ export default function MenuClient() {
           </button>
         ))}
 
+        {permissionLoaded && canManageMenu && (
         <div style={{ marginLeft: "auto" }}>
           <button
             onClick={() => setShowImportModal(true)}
@@ -641,6 +694,7 @@ export default function MenuClient() {
             Bulk Import
           </button>
         </div>
+        )}
       </div>
 
       {/* FILTERS */}
@@ -985,11 +1039,10 @@ export default function MenuClient() {
                             "1px solid #f0f1f3",
                         }}
                       >
+                        {canManageMenu ? (
                         <button
                           onClick={() =>
-                            toggleAvailability(
-                              product
-                            )
+                            toggleAvailability(product)
                           }
                           style={{
                             border: "none",
@@ -1017,6 +1070,21 @@ export default function MenuClient() {
                             ? "Available"
                             : "Unavailable"}
                         </button>
+                        ) : (
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              borderRadius: "999px",
+                              padding: "5px 9px",
+                              fontSize: "10px",
+                              fontWeight: 650,
+                              background: product.is_available ? "#ecfdf3" : "#f3f4f6",
+                              color: product.is_available ? "#15803d" : "#6b7280",
+                            }}
+                          >
+                            {product.is_available ? "Available" : "Unavailable"}
+                          </span>
+                        )}
                       </td>
 
                       <td
@@ -1027,10 +1095,10 @@ export default function MenuClient() {
                             "1px solid #f0f1f3",
                         }}
                       >
+                        {canManageMenu ? (
                         <div
                           style={{
-                            display:
-                              "flex",
+                            display: "flex",
                             gap: "7px",
                           }}
                         >
@@ -1096,6 +1164,9 @@ export default function MenuClient() {
                             Variants
                           </button>
                         </div>
+                        ) : (
+                          <span style={{ fontSize: "11px", color: "#9a9da4" }}>View only</span>
+                        )}
                       </td>
                     </tr>
                   )
@@ -1107,7 +1178,7 @@ export default function MenuClient() {
       </div>
 
       {/* CATEGORY MODAL */}
-      {showCategoryModal && (
+      {canManageMenu && showCategoryModal && (
         <CategoryModal
           category={editingCategory}
           onClose={() => {
@@ -1119,7 +1190,7 @@ export default function MenuClient() {
       )}
 
       {/* PRODUCT MODAL */}
-      {showProductModal && (
+      {canManageMenu && showProductModal && (
         <ProductModal
           product={editingProduct}
           categories={categories}
@@ -1132,7 +1203,7 @@ export default function MenuClient() {
       )}
 
       {/* VARIANTS MODAL */}
-      {selectedProduct && (
+      {canManageMenu && selectedProduct && (
         <VariantsModal
           product={selectedProduct}
           variants={variants}
@@ -1149,7 +1220,7 @@ export default function MenuClient() {
       )}
 
       {/* BULK IMPORT */}
-      {showImportModal && (
+      {canManageMenu && showImportModal && (
         <BulkImportModal
           categories={categories}
           restaurantId={restaurantId}
@@ -1310,56 +1381,45 @@ function ProductModal({
   const [uploadError, setUploadError] =
     useState("");
 
-  async function handleImageUpload(
-    file: File
-  ) {
-    setUploading(true);
-    setUploadError("");
+  
+async function handleImageUpload(file: File) {
+  setUploading(true);
+  setUploadError("");
 
-    try {
-      const supabase = createClient();
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
 
-      const extension =
-        file.name.split(".").pop() ||
-        "jpg";
-
-      const fileName = `${crypto.randomUUID()}.${extension}`;
-
-      const filePath = `products/${fileName}`;
-
-      const { error: uploadError } =
-        await supabase.storage
-          .from("menu-images")
-          .upload(filePath, file, {
-            cacheControl: "3600",
-            upsert: false,
-          });
-
-      if (uploadError) {
-        throw uploadError;
+    const response = await fetch(
+      "/api/restaurant/menu/products/image/upload",
+      {
+        method: "POST",
+        body: formData,
       }
+    );
 
-      const {
-        data: publicUrlData,
-      } = supabase.storage
-        .from("menu-images")
-        .getPublicUrl(filePath);
+    const result = await response.json();
 
-      setImageUrl(
-        publicUrlData.publicUrl
+    if (!response.ok) {
+      throw new Error(
+        result.error || "Image upload failed."
       );
-    } catch (error) {
-      console.error(error);
-
-      setUploadError(
-        error instanceof Error
-          ? error.message
-          : "Image upload failed."
-      );
-    } finally {
-      setUploading(false);
     }
+
+    setImageUrl(result.image_url);
+  } catch (error) {
+    console.error("Product image upload failed:", error);
+
+    setUploadError(
+      error instanceof Error
+        ? error.message
+        : "Image upload failed."
+    );
+  } finally {
+    setUploading(false);
   }
+}
+
 
   async function handleSave() {
     if (
@@ -1772,28 +1832,53 @@ function VariantsModal({
   const [price, setPrice] = useState("");
   const [mrp, setMrp] = useState("");
 
-  async function addVariant() {
-    if (!restaurantId || !name.trim() || !price) {
-      return;
-    }
+  
+async function addVariant() {
+  if (!restaurantId || !name.trim() || !price) {
+    return;
+  }
 
-    const supabase = createClient();
+  const parsedPrice = Number(price);
+  const parsedMrp = mrp.trim() ? Number(mrp) : null;
 
-    const { error } = await supabase
-      .from("product_variants")
-      .insert({
-        product_id: product.id,
-        name: name.trim(),
-        price: Number(price),
-        mrp: mrp ? Number(mrp) : null,
-        sort_order: variants.length,
-        is_available: true,
-        is_active: true,
-      });
+  if (
+    !Number.isFinite(parsedPrice) ||
+    parsedPrice < 0 ||
+    (parsedMrp !== null &&
+      (!Number.isFinite(parsedMrp) || parsedMrp < 0))
+  ) {
+    return;
+  }
 
-    if (error) {
-      return;
-    }
+  try {
+    const response = await fetch(
+      "/api/restaurant/menu/variants",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          product_id: product.id,
+          name: name.trim(),
+          price: parsedPrice,
+          mrp: parsedMrp,
+        }),
+      }
+    );
+
+    const result = await response.json();
+
+   if (!response.ok) {
+  console.error("Add variant failed:", {
+    status: response.status,
+    error: result.error,
+    details: result,
+  });
+
+  alert(result.error || "Failed to add variant.");
+  return;
+}
 
     setName("");
     setPrice("");
@@ -1801,7 +1886,11 @@ function VariantsModal({
     setShowAdd(false);
 
     await onReload();
+  } catch (error) {
+    console.error("Add variant error:", error);
   }
+}
+
 
   return (
     <Modal onClose={onClose}>
@@ -1976,10 +2065,6 @@ function VariantsModal({
    BULK IMPORT
 ============================================================ */
 
-/* ============================================================
-   BULK IMPORT
-============================================================ */
-
 function BulkImportModal({
   categories,
   restaurantId,
@@ -2100,164 +2185,153 @@ function BulkImportModal({
      IMAGE ONLY — UPLOAD
   ============================================================ */
 
-  async function uploadImagesOnly() {
-    if (!restaurantId || !imageZip) {
-      setMessage(
-        "Restaurant or image ZIP is missing."
-      );
-      return;
-    }
+ 
+async function uploadImagesOnly() {
+  if (!restaurantId || !imageZip) {
+    setMessage("Restaurant or image ZIP is missing.");
+    return;
+  }
 
-    const matchedRows = imageRows.filter(
-      (row) =>
-        row.matchedProduct !== null
+  const matchedRows = imageRows.filter(
+    (row) => row.matchedProduct !== null
+  );
+
+  if (matchedRows.length === 0) {
+    setMessage("No images could be matched to existing products.");
+    return;
+  }
+
+  setStep("ADDING");
+  setMessage("");
+
+  try {
+    const zip = await JSZip.loadAsync(
+      await imageZip.arrayBuffer()
     );
 
-    if (matchedRows.length === 0) {
-      setMessage(
-        "No images could be matched to existing products."
+    let uploaded = 0;
+    let failed = 0;
+
+    for (const row of matchedRows) {
+      const product = row.matchedProduct;
+
+      if (!product) continue;
+
+      const zipFile = Object.values(zip.files).find((item) => {
+        const name = item.name.split("/").pop()?.trim() || "";
+        return !item.dir && name === row.fileName;
+      });
+
+      if (!zipFile) {
+        failed++;
+        continue;
+      }
+
+      const imageBlob = await zipFile.async("blob");
+      const extension =
+        row.fileName.split(".").pop()?.toLowerCase() || "";
+
+      const mimeType =
+        extension === "jpg" || extension === "jpeg"
+          ? "image/jpeg"
+          : extension === "png"
+            ? "image/png"
+            : extension === "webp"
+              ? "image/webp"
+              : "";
+
+      if (!mimeType) {
+        failed++;
+        continue;
+      }
+
+      const formData = new FormData();
+
+      formData.append(
+        "file",
+        new File([imageBlob], row.fileName, {
+          type: mimeType,
+        })
       );
+
+      // Upload through the authenticated server endpoint.
+      const uploadResponse = await fetch(
+        `/api/restaurant/menu/products/${product.id}/image/upload`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+
+      const uploadResult = await uploadResponse.json();
+
+      if (!uploadResponse.ok) {
+        console.error(
+          `Upload failed for ${product.name}:`,
+          uploadResult.error
+        );
+        failed++;
+        continue;
+      }
+
+      // Save the URL through the existing protected update endpoint.
+      const updateResponse = await fetch(
+        `/api/restaurant/menu/products/${product.id}/image`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            image_url: uploadResult.image_url,
+          }),
+        }
+      );
+
+      const updateResult = await updateResponse.json();
+
+      if (!updateResponse.ok) {
+        console.error(
+          `Image URL update failed for ${product.name}:`,
+          updateResult.error
+        );
+        failed++;
+        continue;
+      }
+
+      uploaded++;
+    }
+
+    if (uploaded === 0) {
+      setMessage(
+        failed > 0
+          ? `No images uploaded successfully. ${failed} failed.`
+          : "No images were uploaded."
+      );
+      setStep("IMAGE_REVIEW");
       return;
     }
 
-    setStep("ADDING");
-    setMessage("");
+    setMessage(
+      `${uploaded} image${uploaded === 1 ? "" : "s"} uploaded successfully.` +
+        (failed > 0 ? ` ${failed} failed.` : "")
+    );
 
-    const supabase = createClient();
+    setStep("DONE");
+    await onComplete();
+  } catch (error) {
+    console.error("Image upload failed:", error);
 
-    try {
-      const zip = await JSZip.loadAsync(
-        await imageZip.arrayBuffer()
-      );
+    setMessage(
+      error instanceof Error
+        ? error.message
+        : "Image upload failed."
+    );
 
-      let uploaded = 0;
-
-      for (const row of matchedRows) {
-        const product =
-          row.matchedProduct;
-
-        if (!product) {
-          continue;
-        }
-
-        const zipFile =
-          Object.values(zip.files).find(
-            (item) => {
-              const name =
-                item.name
-                  .split("/")
-                  .pop()
-                  ?.trim() || "";
-
-              return (
-                name === row.fileName
-              );
-            }
-          );
-
-        if (!zipFile) {
-          continue;
-        }
-
-        const extension =
-          row.fileName
-            .split(".")
-            .pop()
-            ?.toLowerCase() || "jpg";
-
-        const storagePath =
-          `restaurants/${restaurantId}/products/${product.id}/${crypto.randomUUID()}.${extension}`;
-
-        const imageBlob =
-          await zipFile.async("blob");
-
-        const contentType =
-          extension === "jpg" ||
-          extension === "jpeg"
-            ? "image/jpeg"
-            : extension === "png"
-              ? "image/png"
-              : "image/webp";
-
-        const {
-          error: uploadError,
-        } = await supabase.storage
-          .from("menu-images")
-          .upload(
-            storagePath,
-            imageBlob,
-            {
-              contentType,
-              cacheControl: "3600",
-              upsert: false,
-            }
-          );
-
-        if (uploadError) {
-          throw uploadError;
-        }
-
-        const {
-          data: publicUrlData,
-        } = supabase.storage
-          .from("menu-images")
-          .getPublicUrl(
-            storagePath
-          );
-
-        const {
-          error: updateError,
-        } = await supabase
-          .from("products")
-          .update({
-            image_url:
-              publicUrlData.publicUrl,
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq("id", product.id)
-          .eq(
-            "restaurant_id",
-            restaurantId
-          );
-
-        if (updateError) {
-          throw updateError;
-        }
-
-        uploaded++;
-      }
-
-      if (uploaded === 0) {
-        setMessage(
-          "No images were uploaded."
-        );
-        setStep("IMAGE_REVIEW");
-        return;
-      }
-
-      setMessage(
-        `${uploaded} image${
-          uploaded === 1 ? "" : "s"
-        } uploaded successfully.`
-      );
-
-      setStep("DONE");
-    } catch (error) {
-      console.error(
-        "Image upload failed:",
-        error
-      );
-
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : "Image upload failed."
-      );
-
-      setStep("IMAGE_REVIEW");
-    }
+    setStep("IMAGE_REVIEW");
   }
+}
+
 
   /* ============================================================
      TEMPLATE
@@ -2497,425 +2571,150 @@ function BulkImportModal({
      ADD PRODUCTS TO MENU
   ============================================================ */
 
-  async function addToMenu() {
-    if (!restaurantId) {
-      setMessage(
-        "Restaurant could not be found."
-      );
-      return;
-    }
-
-    const validRows =
-      rows.filter(
-        (row) => row.valid
-      );
-
-    if (validRows.length === 0) {
-      setMessage(
-        "There are no valid products to add."
-      );
-      return;
-    }
-
-    setStep("ADDING");
-    setMessage("");
-
-    const supabase =
-      createClient();
-
-    try {
-      /* -----------------------------------------
-         1. EXISTING CATEGORIES
-      ----------------------------------------- */
-
-      const {
-        data: existingCategories,
-        error:
-          categoryLoadError,
-      } = await supabase
-        .from("categories")
-        .select(
-          "id, name, sort_order"
-        )
-        .eq(
-          "restaurant_id",
-          restaurantId
-        );
-
-      if (categoryLoadError) {
-        throw categoryLoadError;
-      }
-
-      const categoryMap =
-        new Map<
-          string,
-          number
-        >();
-
-      (
-        existingCategories ||
-        []
-      ).forEach(
-        (category) => {
-          categoryMap.set(
-            normalizeCategory(
-              category.name
-            ),
-            category.id
-          );
-        }
-      );
-
-      /* -----------------------------------------
-         2. UNIQUE CATEGORIES
-      ----------------------------------------- */
-
-      const uniqueCategories =
-        Array.from(
-          new Map(
-            validRows.map(
-              (row) => [
-                normalizeCategory(
-                  row.category
-                ),
-                row.category.trim(),
-              ]
-            )
-          ).values()
-        );
-
-      /* -----------------------------------------
-         3. CREATE MISSING CATEGORIES
-      ----------------------------------------- */
-
-      const newCategories =
-        uniqueCategories.filter(
-          (categoryName) =>
-            !categoryMap.has(
-              normalizeCategory(
-                categoryName
-              )
-            )
-        );
-
-      if (
-        newCategories.length >
-        0
-      ) {
-        const now =
-          new Date().toISOString();
-
-        const startingSortOrder =
-          (
-            existingCategories ||
-            []
-          ).reduce(
-            (max, category) =>
-              Math.max(
-                max,
-                Number(
-                  category.sort_order ||
-                    0
-                )
-              ),
-            -1
-          ) + 1;
-
-        const categoryRows =
-          newCategories.map(
-            (
-              categoryName,
-              index
-            ) => ({
-              restaurant_id:
-                restaurantId,
-              name:
-                categoryName,
-              slug:
-                slugify(
-                  categoryName
-                ),
-              description:
-                null,
-              image_url:
-                null,
-              sort_order:
-                startingSortOrder +
-                index,
-              is_active:
-                true,
-              created_at:
-                now,
-              updated_at:
-                now,
-            })
-          );
-
-        const {
-          data:
-            insertedCategories,
-          error:
-            categoryInsertError,
-        } =
-          await supabase
-            .from(
-              "categories"
-            )
-            .insert(
-              categoryRows
-            )
-            .select(
-              "id, name"
-            );
-
-        if (
-          categoryInsertError
-        ) {
-          throw categoryInsertError;
-        }
-
-        (
-          insertedCategories ||
-          []
-        ).forEach(
-          (category) => {
-            categoryMap.set(
-              normalizeCategory(
-                category.name
-              ),
-              category.id
-            );
-          }
-        );
-      }
-
-      /* -----------------------------------------
-         4. OPTIONAL ZIP IMAGES
-      ----------------------------------------- */
-
-      const imageMap =
-        new Map<
-          string,
-          string
-        >();
-
-      if (imageZip) {
-        const zip =
-          await JSZip.loadAsync(
-            await imageZip.arrayBuffer()
-          );
-
-        const imageFiles =
-          Object.values(
-            zip.files
-          ).filter(
-            (zipFile) =>
-              !zipFile.dir &&
-              /\.(jpg|jpeg|png|webp)$/i.test(
-                zipFile.name
-              )
-          );
-
-        for (
-          const imageFile of imageFiles
-        ) {
-          const originalName =
-            imageFile.name
-              .split("/")
-              .pop()
-              ?.trim() || "";
-
-          const extension =
-            originalName
-              .split(".")
-              .pop()
-              ?.toLowerCase() ||
-            "jpg";
-
-          const storagePath =
-            `restaurants/${restaurantId}/products/${crypto.randomUUID()}.${extension}`;
-
-          const imageBlob =
-            await imageFile.async(
-              "blob"
-            );
-
-          const contentType =
-            extension === "jpg" ||
-            extension === "jpeg"
-              ? "image/jpeg"
-              : extension === "png"
-                ? "image/png"
-                : "image/webp";
-
-          const {
-            error:
-              uploadError,
-          } =
-            await supabase.storage
-              .from(
-                "menu-images"
-              )
-              .upload(
-                storagePath,
-                imageBlob,
-                {
-                  contentType,
-                  cacheControl:
-                    "3600",
-                  upsert:
-                    false,
-                }
-              );
-
-          if (uploadError) {
-            throw uploadError;
-          }
-
-          const {
-            data:
-              publicUrlData,
-          } =
-            supabase.storage
-              .from(
-                "menu-images"
-              )
-              .getPublicUrl(
-                storagePath
-              );
-
-          imageMap.set(
-            originalName.toLowerCase(),
-            publicUrlData.publicUrl
-          );
-        }
-      }
-
-      /* -----------------------------------------
-         5. CREATE PRODUCTS
-      ----------------------------------------- */
-
-      const now =
-        new Date().toISOString();
-
-      const productRows =
-        validRows
-          .map((row) => {
-            const categoryId =
-              categoryMap.get(
-                normalizeCategory(
-                  row.category
-                )
-              );
-
-            if (!categoryId) {
-              return null;
-            }
-
-            let imageUrl:
-              | string
-              | null = null;
-
-            if (
-              imageZip &&
-              row.image
-            ) {
-              const imageFileName =
-                row.image
-                  .split("/")
-                  .pop()
-                  ?.trim()
-                  .toLowerCase() ||
-                "";
-
-              imageUrl =
-                imageMap.get(
-                  imageFileName
-                ) || null;
-            }
-
-            return {
-              restaurant_id:
-                restaurantId,
-              category_id:
-                categoryId,
-              name:
-                row.name.trim(),
-              slug:
-                slugify(
-                  row.name
-                ),
-              description:
-                row.description ||
-                null,
-              price:
-                row.price,
-              mrp:
-                row.mrp,
-              image_url:
-                imageUrl,
-              is_vegetarian:
-                row.vegetarian,
-              is_available:
-                row.available,
-              is_active:
-                true,
-              created_at:
-                now,
-              updated_at:
-                now,
-            };
-          })
-          .filter(
-            (
-              product
-            ): product is NonNullable<
-              typeof product
-            > =>
-              product !== null
-          );
-
-      /* -----------------------------------------
-         6. INSERT PRODUCTS
-      ----------------------------------------- */
-
-      if (
-        productRows.length >
-        0
-      ) {
-        const {
-          error:
-            productInsertError,
-        } =
-          await supabase
-            .from("products")
-            .insert(
-              productRows
-            );
-
-        if (
-          productInsertError
-        ) {
-          throw productInsertError;
-        }
-      }
-
-      setStep("DONE");
-    } catch (error) {
-      console.error(
-        "Bulk import failed:",
-        error
-      );
-
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : "Bulk import failed."
-      );
-
-      setStep("REVIEW");
-    }
+  
+async function addToMenu() {
+  if (!restaurantId) {
+    setMessage("Restaurant could not be found.");
+    return;
   }
+
+  
+
+  const validRows = rows.filter((row) => row.valid);
+
+  if (validRows.length === 0) {
+    setMessage("There are no valid products to add.");
+    return;
+  }
+
+  setStep("ADDING");
+  setMessage("");
+
+  try {
+    const imageMap = new Map<string, string>();
+
+    // Preserve the existing optional ZIP image-upload workflow.
+    if (imageZip) {
+      const zip = await JSZip.loadAsync(
+        await imageZip.arrayBuffer()
+      );
+
+      const imageFiles = Object.values(zip.files).filter(
+        (zipFile) =>
+          !zipFile.dir &&
+          /\.(jpg|jpeg|png|webp)$/i.test(zipFile.name)
+      );
+
+
+      for (const imageFile of imageFiles) {
+        const originalName =
+          imageFile.name.split("/").pop()?.trim() || "";
+
+        const extension =
+          originalName.split(".").pop()?.toLowerCase() || "jpg";
+
+        const storagePath =
+  `restaurants/${restaurantId}/products/${crypto.randomUUID()}.${extension}`;
+
+        const imageBlob = await imageFile.async("blob");
+
+        const contentType =
+          extension === "jpg" || extension === "jpeg"
+            ? "image/jpeg"
+            : extension === "png"
+              ? "image/png"
+              : "image/webp";
+
+        
+const formData = new FormData();
+
+formData.append(
+  "file",
+  new File([imageBlob], originalName, {
+    type: contentType,
+  })
+);
+
+const response = await fetch(
+  "/api/restaurant/menu/bulk-import/images",
+  {
+    method: "POST",
+    body: formData,
+  }
+);
+
+const result = await response.json();
+
+if (!response.ok) {
+  throw new Error(
+    result.error || `Failed to upload ${originalName}`
+  );
+}
+
+imageMap.set(
+  originalName.toLowerCase(),
+  result.image_url
+);
+      }
+    }
+
+    const products = validRows.map((row) => {
+      const imageFileName = row.image
+        .split("/")
+        .pop()
+        ?.trim()
+        .toLowerCase() || "";
+
+      return {
+        name: row.name,
+        description: row.description,
+        category: row.category,
+        price: row.price,
+        mrp: row.mrp,
+        vegetarian: row.vegetarian,
+        available: row.available,
+        imageUrl: imageZip
+          ? imageMap.get(imageFileName) ?? null
+          : null,
+      };
+    });
+
+    const response = await fetch(
+      "/api/restaurant/menu/bulk-import",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ products }),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Bulk import failed.");
+    }
+
+    setMessage(
+      `${result.count} product${result.count === 1 ? "" : "s"} imported successfully.`
+    );
+
+    setStep("DONE");
+    await onComplete();
+  } catch (error) {
+    console.error("Bulk import failed:", error);
+
+    setMessage(
+      error instanceof Error
+        ? error.message
+        : "Bulk import failed."
+    );
+
+    setStep("REVIEW");
+  }
+}
+
 
   const validCount =
     rows.filter(

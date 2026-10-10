@@ -153,6 +153,55 @@ export default function OrdersPage() {
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState("");
 
+  const [canManageOrders, setCanManageOrders] = useState(false);
+const [permissionLoaded, setPermissionLoaded] = useState(false);
+
+useEffect(() => {
+  let active = true;
+
+  async function loadOrderPermission() {
+    try {
+      const response = await fetch("/api/restaurant/me", {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error("Unable to load permissions.");
+      }
+
+      const data = await response.json();
+
+      const isOwner = data.role?.name === "OWNER";
+
+      const ordersAccess =
+        data.permissions?.find(
+          (permission: { module: string; access: string }) =>
+            permission.module === "orders"
+        )?.access ?? "NONE";
+
+      if (active) {
+        setCanManageOrders(isOwner || ordersAccess === "FULL");
+      }
+    } catch (error) {
+      console.error("Failed to load order permissions:", error);
+
+      if (active) {
+        setCanManageOrders(false);
+      }
+    } finally {
+      if (active) {
+        setPermissionLoaded(true);
+      }
+    }
+  }
+
+  loadOrderPermission();
+
+  return () => {
+    active = false;
+  };
+}, []);
+
   const [restaurantId, setRestaurantId] =
     useState<number | null>(null);
 
@@ -390,67 +439,57 @@ export default function OrdersPage() {
     }
   }
 
-  async function updateOrderStatus(
-    orderId: number,
-    newStatus: string
-  ) {
-    try {
-      setUpdating(true);
-      setError("");
-
-      const supabase = createClient();
-
-      const { data: authData } =
-        await supabase.auth.getUser();
-
-      if (!authData.user) {
-        setError("You are not logged in.");
-        return;
-      }
-
-      const { data: restaurantUser } =
-        await supabase
-          .from("users")
-          .select("restaurant_id")
-          .eq("auth_user_id", authData.user.id)
-          .single();
-
-      if (!restaurantUser?.restaurant_id) {
-        setError(
-          "Restaurant information could not be found."
-        );
-        return;
-      }
-
-      const { error: updateError } =
-        await supabase
-          .from("orders")
-          .update({
-            status: newStatus,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", orderId)
-          .eq(
-            "restaurant_id",
-            restaurantUser.restaurant_id
-          );
-
-      if (updateError) {
-        throw updateError;
-      }
-
-      await loadOrders();
-
-      if (selectedOrder?.order.id === orderId) {
-        setSelectedOrder(null);
-      }
-    } catch (err) {
-      console.error(err);
-      setError("Unable to update order status.");
-    } finally {
-      setUpdating(false);
-    }
+  
+async function updateOrderStatus(
+  orderId: number,
+  newStatus: string
+) {
+  if (!permissionLoaded || !canManageOrders) {
+    setError("You don't have permission to update orders.");
+    return;
   }
+
+  try {
+    setUpdating(true);
+    setError("");
+
+    const response = await fetch(
+      `/api/restaurant/orders/${orderId}/status`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status: newStatus }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Unable to update order status."
+      );
+    }
+
+    await loadOrders();
+
+    if (selectedOrder?.order.id === orderId) {
+      setSelectedOrder(null);
+    }
+  } catch (err) {
+    console.error(err);
+
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to update order status."
+    );
+  } finally {
+    setUpdating(false);
+  }
+}
+
 
   const stats = {
     total: orders.length,
@@ -1009,8 +1048,7 @@ export default function OrdersPage() {
                             View
                           </button>
 
-                          {nextStatus &&
-                            nextLabel && (
+                          {canManageOrders && nextStatus && nextLabel &&  (
                               <button
                                 onClick={() =>
                                   updateOrderStatus(
@@ -1427,9 +1465,8 @@ export default function OrdersPage() {
                 </div>
               </div>
 
-              {getNextStatus(
-                selectedOrder.order.status
-              ) && (
+              {canManageOrders &&
+  getNextStatus(selectedOrder.order.status) && (
                 <button
                   onClick={() =>
                     updateOrderStatus(

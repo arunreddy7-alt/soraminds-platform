@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
 type Table = {
   id: number;
@@ -16,14 +15,12 @@ type Table = {
 type StatusFilter = "ALL" | "FREE" | "OCCUPIED" | "RESERVED";
 
 export default function TablesClient() {
-  const supabase = createClient();
 
   const [tables, setTables] = useState<Table[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const [restaurantId, setRestaurantId] = useState<number | null>(null);
 
   const [showModal, setShowModal] = useState(false);
   const [editingTable, setEditingTable] = useState<Table | null>(null);
@@ -35,69 +32,40 @@ export default function TablesClient() {
   const [statusFilter, setStatusFilter] =
     useState<StatusFilter>("ALL");
 
-  const getRestaurantId = async () => {
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
+const loadTables = async () => {
+  try {
+    setLoading(true);
+    setError("");
 
-    if (authError || !user) {
-      throw new Error("You are not authenticated.");
+    const response = await fetch("/api/restaurant/tables", {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to load tables.");
     }
 
-    const { data, error: userError } = await supabase
-      .from("users")
-      .select("restaurant_id, is_active")
-      .eq("auth_user_id", user.id)
-      .maybeSingle();
+    setTables(result.tables ?? []);
+  } catch (err) {
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to load tables."
+    );
+  } finally {
+    setLoading(false);
+  }
+};
 
-    if (userError) {
-      throw new Error(userError.message);
-    }
 
-    if (!data || !data.restaurant_id || !data.is_active) {
-      throw new Error("Restaurant user account is invalid.");
-    }
+useEffect(() => {
+  void loadTables();
+}, []);
 
-    return data.restaurant_id;
-  };
 
-  const loadTables = async () => {
-    try {
-      setLoading(true);
-      setError("");
-
-      const currentRestaurantId = await getRestaurantId();
-
-      setRestaurantId(currentRestaurantId);
-
-      const { data, error: tablesError } = await supabase
-        .from("tables")
-        .select(
-          "id, restaurant_id, table_number, seats, status, created_at, updated_at"
-        )
-        .eq("restaurant_id", currentRestaurantId)
-        .order("table_number", { ascending: true });
-
-      if (tablesError) {
-        throw new Error(tablesError.message);
-      }
-
-      setTables(data || []);
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to load tables."
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadTables();
-  }, []);
 
   const stats = useMemo(() => {
     return {
@@ -172,134 +140,133 @@ export default function TablesClient() {
       return;
     }
 
-    if (!restaurantId) {
-      setError("Restaurant could not be identified.");
-      return;
+try {
+  setSaving(true);
+  setError("");
+
+  const isEditing = Boolean(editingTable);
+
+  const response = await fetch(
+    isEditing
+      ? `/api/restaurant/tables/${editingTable!.id}`
+      : "/api/restaurant/tables",
+    {
+      method: isEditing ? "PATCH" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        table_number: trimmedNumber,
+        seats: seatCount,
+      }),
     }
+  );
 
-    try {
-      setSaving(true);
-      setError("");
+  const result = await response.json();
 
-      if (editingTable) {
-        const { error: updateError } = await supabase
-          .from("tables")
-          .update({
-            table_number: trimmedNumber,
-            seats: seatCount,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", editingTable.id)
-          .eq("restaurant_id", restaurantId);
+  if (!response.ok) {
+    throw new Error(result.error || "Unable to save table.");
+  }
 
-        if (updateError) {
-          throw new Error(updateError.message);
-        }
-      } else {
-        const { error: insertError } = await supabase
-          .from("tables")
-          .insert({
-            restaurant_id: restaurantId,
-            table_number: trimmedNumber,
-            seats: seatCount,
-            status: "FREE",
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
-
-        if (insertError) {
-          throw new Error(insertError.message);
-        }
-      }
-
-      closeModal();
-      await loadTables();
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to save table."
-      );
-    } finally {
-      setSaving(false);
-    }
+  closeModal();
+  await loadTables();
+} catch (err) {
+  setError(
+    err instanceof Error
+      ? err.message
+      : "Unable to save table."
+  );
+} finally {
+  setSaving(false);
+}
   };
 
-  const changeStatus = async (
-    table: Table,
-    newStatus: string
-  ) => {
-    if (!restaurantId) return;
 
-    try {
-      setError("");
+const changeStatus = async (
+  table: Table,
+  newStatus: string
+) => {
+  const previousStatus = table.status;
 
-      const { error: updateError } = await supabase
-        .from("tables")
-        .update({
-          status: newStatus,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", table.id)
-        .eq("restaurant_id", restaurantId);
+  setError("");
 
-      if (updateError) {
-        throw new Error(updateError.message);
+  // Optimistically revert the dropdown if the request fails.
+  try {
+    const response = await fetch(
+      `/api/restaurant/tables/${table.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status: newStatus }),
       }
-
-      setTables((current) =>
-        current.map((item) =>
-          item.id === table.id
-            ? {
-                ...item,
-                status: newStatus,
-                updated_at: new Date().toISOString(),
-              }
-            : item
-        )
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to update table status."
-      );
-    }
-  };
-
-  const deleteTable = async (table: Table) => {
-    if (!restaurantId) return;
-
-    const confirmed = window.confirm(
-      `Delete Table ${table.table_number}?`
     );
 
-    if (!confirmed) return;
+    const result = await response.json();
 
-    try {
-      setError("");
-
-      const { error: deleteError } = await supabase
-        .from("tables")
-        .delete()
-        .eq("id", table.id)
-        .eq("restaurant_id", restaurantId);
-
-      if (deleteError) {
-        throw new Error(deleteError.message);
-      }
-
-      setTables((current) =>
-        current.filter((item) => item.id !== table.id)
-      );
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to delete table."
+    if (!response.ok) {
+      throw new Error(
+        result.error || "Unable to update table status."
       );
     }
-  };
+
+    setTables((current) =>
+      current.map((item) =>
+        item.id === table.id
+          ? result.table
+          : item
+      )
+    );
+  } catch (err) {
+    setTables((current) =>
+      current.map((item) =>
+        item.id === table.id
+          ? { ...item, status: previousStatus }
+          : item
+      )
+    );
+
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to update table status."
+    );
+  }
+};
+
+  const deleteTable = async (table: Table) => {
+  const confirmed = window.confirm(
+    `Delete Table ${table.table_number}?`
+  );
+
+  if (!confirmed) return;
+
+  try {
+    setError("");
+
+    const response = await fetch(
+      `/api/restaurant/tables/${table.id}`,
+      { method: "DELETE" }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Unable to delete table.");
+    }
+
+    setTables((current) =>
+      current.filter((item) => item.id !== table.id)
+    );
+  } catch (err) {
+    setError(
+      err instanceof Error
+        ? err.message
+        : "Unable to delete table."
+    );
+  }
+};
 
   const getStatusStyle = (status: string) => {
     if (status === "FREE") {

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 
 type Banner = {
   id: number;
@@ -16,7 +15,9 @@ type Banner = {
 };
 
 export default function PromotionsClient() {
-  const supabase = createClient();
+
+  const [canManagePromotions, setCanManagePromotions] = useState(false);
+  const [permissionLoaded, setPermissionLoaded] = useState(false);
 
   const [restaurantId, setRestaurantId] = useState<number | null>(null);
   const [restaurantName, setRestaurantName] = useState("");
@@ -40,89 +41,85 @@ export default function PromotionsClient() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  useEffect(() => {
-    loadData();
-  }, []);
+useEffect(() => {
+  let cancelled = false;
 
-  async function loadData() {
+  async function loadPermissions() {
     try {
-      setLoading(true);
-      setError("");
+      const response = await fetch("/api/restaurant/me", {
+        cache: "no-store",
+      });
 
-      const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+      const result = await response.json();
 
-      if (userError) throw userError;
-
-      if (!user) {
-        throw new Error("You are not logged in.");
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to load permissions.");
       }
 
-      const { data: userData, error: userDataError } =
-        await supabase
-          .from("users")
-          .select("restaurant_id")
-          .eq("auth_user_id", user.id)
-          .eq("is_active", true)
-          .single();
+      const isOwner = result.role?.name === "OWNER";
 
-      if (userDataError) throw userDataError;
+      const hasFullAccess =
+        Array.isArray(result.permissions) &&
+        result.permissions.some(
+          (permission: { module: string; access: string }) =>
+            permission.module === "promotions" &&
+            permission.access === "FULL"
+        );
 
-      if (!userData?.restaurant_id) {
-        throw new Error("Restaurant could not be found.");
+      if (!cancelled) {
+        setCanManagePromotions(isOwner || hasFullAccess);
       }
+    } catch (error) {
+      console.error("Failed to load promotions permissions:", error);
 
-      const currentRestaurantId = userData.restaurant_id;
-
-      setRestaurantId(currentRestaurantId);
-
-      const [restaurantResult, bannersResult] =
-        await Promise.all([
-          supabase
-            .from("restaurants")
-            .select("name")
-            .eq("id", currentRestaurantId)
-            .single(),
-
-          supabase
-            .from("banners")
-            .select(
-              `
-                id,
-                restaurant_id,
-                title,
-                description,
-                image_url,
-                sort_order,
-                is_active,
-                created_at,
-                updated_at
-              `
-            )
-            .eq("restaurant_id", currentRestaurantId)
-            .order("sort_order", { ascending: true })
-            .order("created_at", { ascending: false }),
-        ]);
-
-      if (restaurantResult.error) {
-        throw restaurantResult.error;
+      if (!cancelled) {
+        setCanManagePromotions(false);
       }
-
-      if (bannersResult.error) {
-        throw bannersResult.error;
-      }
-
-      setRestaurantName(restaurantResult.data?.name || "");
-      setBanners((bannersResult.data as Banner[]) || []);
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Failed to load promotions.");
     } finally {
-      setLoading(false);
+      if (!cancelled) {
+        setPermissionLoaded(true);
+      }
     }
   }
+
+  loadPermissions();
+
+  return () => {
+    cancelled = true;
+  };
+}, []);
+
+
+  
+async function loadData() {
+  try {
+    setLoading(true);
+    setError("");
+
+    const response = await fetch("/api/restaurant/promotions", {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to load promotions.");
+    }
+
+    setRestaurantName(result.restaurantName || "");
+    setBanners((result.banners || []) as Banner[]);
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to load promotions.");
+  } finally {
+    setLoading(false);
+  }
+}
+useEffect(() => {
+  void loadData();
+}, []);
+
 
   function resetForm() {
     setTitle("");
@@ -156,179 +153,173 @@ export default function PromotionsClient() {
   }
 
   async function handleImageUpload(
-    event: React.ChangeEvent<HTMLInputElement>
-  ) {
-    try {
-      const file = event.target.files?.[0];
+  event: React.ChangeEvent<HTMLInputElement>
+) {
+  try {
+    const file = event.target.files?.[0];
+    if (!file) return;
 
-      if (!file) return;
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
 
-      if (!file.type.startsWith("image/")) {
-        setError("Please select an image file.");
-        return;
-      }
-
-      if (file.size > 5 * 1024 * 1024) {
-        setError("Image must be smaller than 5MB.");
-        return;
-      }
-
-      if (!restaurantId) {
-        setError("Restaurant not found.");
-        return;
-      }
-
-      setUploadingImage(true);
-      setError("");
-
-      const extension =
-        file.name.split(".").pop()?.toLowerCase() || "jpg";
-
-      const fileName = `banner-${Date.now()}-${Math.random()
-        .toString(36)
-        .substring(2, 10)}.${extension}`;
-
-      const filePath = `banners/${restaurantId}/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("menu-images")
-        .upload(filePath, file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
-
-      if (uploadError) {
-        throw uploadError;
-      }
-
-      const { data } = supabase.storage
-        .from("menu-images")
-        .getPublicUrl(filePath);
-
-      setImageUrl(data.publicUrl);
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Image upload failed.");
-    } finally {
-      setUploadingImage(false);
-      event.target.value = "";
+    if (!allowedTypes.includes(file.type)) {
+      setError("Only JPG, PNG, and WebP images are allowed.");
+      return;
     }
-  }
 
-  async function handleSave() {
-    try {
-      setError("");
-      setSuccess("");
-
-      if (!restaurantId) {
-        setError("Restaurant not found.");
-        return;
-      }
-
-      if (!title.trim()) {
-        setError("Banner title is required.");
-        return;
-      }
-
-      const parsedSortOrder = Number(sortOrder);
-
-      if (
-        !Number.isInteger(parsedSortOrder) ||
-        parsedSortOrder < 0
-      ) {
-        setError("Sort order must be a whole number starting from 0.");
-        return;
-      }
-
-      setSaving(true);
-
-      const now = new Date().toISOString();
-
-      if (editingBanner) {
-        const { error: updateError } = await supabase
-          .from("banners")
-          .update({
-            title: title.trim(),
-            description: description.trim() || null,
-            image_url: imageUrl || null,
-            sort_order: parsedSortOrder,
-            updated_at: now,
-          })
-          .eq("id", editingBanner.id)
-          .eq("restaurant_id", restaurantId);
-
-        if (updateError) {
-          throw updateError;
-        }
-
-        setSuccess("Banner updated successfully.");
-      } else {
-        const { error: insertError } = await supabase
-          .from("banners")
-          .insert({
-            restaurant_id: restaurantId,
-            title: title.trim(),
-            description: description.trim() || null,
-            image_url: imageUrl || null,
-            sort_order: parsedSortOrder,
-            is_active: true,
-            created_at: now,
-            updated_at: now,
-          });
-
-        if (insertError) {
-          throw insertError;
-        }
-
-        setSuccess("Banner created successfully.");
-      }
-
-      setShowModal(false);
-      resetForm();
-
-      await loadData();
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || "Failed to save banner.");
-    } finally {
-      setSaving(false);
+    if (file.size > 5 * 1024 * 1024) {
+      setError("Image size must be less than 5 MB.");
+      return;
     }
-  }
 
-  async function toggleBannerStatus(banner: Banner) {
-    try {
-      setError("");
+    setUploadingImage(true);
+    setError("");
+    setSuccess("");
 
-      const { error: updateError } = await supabase
-        .from("banners")
-        .update({
-          is_active: !banner.is_active,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", banner.id)
-        .eq("restaurant_id", restaurantId);
+    const formData = new FormData();
+    formData.append("file", file);
 
-      if (updateError) {
-        throw updateError;
+    const response = await fetch(
+      "/api/restaurant/promotions/image/upload",
+      {
+        method: "POST",
+        body: formData,
       }
+    );
 
-      setBanners((current) =>
-        current.map((item) =>
-          item.id === banner.id
-            ? {
-                ...item,
-                is_active: !item.is_active,
-              }
-            : item
-        )
-      );
-    } catch (err: any) {
-      console.error(err);
-      setError(
-        err?.message || "Failed to update banner status."
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        result.error || "Failed to upload banner image."
       );
     }
+
+    setImageUrl(result.image_url);
+    setSuccess("Banner image uploaded successfully.");
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to upload banner image.");
+  } finally {
+    setUploadingImage(false);
+    event.target.value = "";
   }
+}
+
+  
+async function handleSave() {
+  if (!permissionLoaded || !canManagePromotions) {
+  setError("You do not have permission to manage promotions.");
+  return;
+}
+  try {
+    setError("");
+    setSuccess("");
+
+    if (!title.trim()) {
+      setError("Banner title is required.");
+      return;
+    }
+
+    const parsedSortOrder = Number(sortOrder);
+
+    if (!Number.isSafeInteger(parsedSortOrder) || parsedSortOrder < 0) {
+      setError("Sort order must be a whole number starting from 0.");
+      return;
+    }
+
+    setSaving(true);
+
+    const isEditing = Boolean(editingBanner);
+
+    const response = await fetch("/api/restaurant/promotions", {
+      method: isEditing ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(isEditing
+          ? { action: "update", bannerId: editingBanner!.id }
+          : {}),
+        title: title.trim(),
+        description: description.trim() || null,
+        image_url: imageUrl || null,
+        sort_order: parsedSortOrder,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+  console.error("Create/update banner failed:", {
+    status: response.status,
+    response: result,
+  });
+
+  throw new Error(
+    result.error || `Failed to save banner (HTTP ${response.status}).`
+  );
+}
+
+    setSuccess(
+      isEditing
+        ? "Banner updated successfully."
+        : "Banner created successfully."
+    );
+
+    setShowModal(false);
+    resetForm();
+
+    await loadData();
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to save banner.");
+  } finally {
+    setSaving(false);
+  }
+}
+
+
+  
+async function toggleBannerStatus(banner: Banner) {
+  if (!permissionLoaded || !canManagePromotions) {
+  setError("You do not have permission to manage promotions.");
+  return;
+}
+  try {
+    setError("");
+    setSuccess("");
+
+    const response = await fetch("/api/restaurant/promotions", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "toggle",
+        bannerId: banner.id,
+        is_active: !banner.is_active,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "Failed to update banner status.");
+    }
+
+    setBanners((current) =>
+      current.map((item) =>
+        item.id === banner.id
+          ? { ...item, is_active: result.banner.is_active }
+          : item
+      )
+    );
+
+    setSuccess(
+      `Banner ${result.banner.is_active ? "activated" : "deactivated"} successfully.`
+    );
+  } catch (err: any) {
+    console.error(err);
+    setError(err?.message || "Failed to update banner status.");
+  }
+}
+
 
   const filteredBanners = useMemo(() => {
     const value = search.trim().toLowerCase();
@@ -414,7 +405,7 @@ export default function PromotionsClient() {
             {restaurantName ? ` for ${restaurantName}` : ""}
           </p>
         </div>
-
+            {permissionLoaded && canManagePromotions && (
         <button
           onClick={openCreateModal}
           style={{
@@ -429,7 +420,7 @@ export default function PromotionsClient() {
           }}
         >
           + Create Banner
-        </button>
+        </button>)}
       </div>
 
       {/* ALERTS */}
@@ -619,7 +610,7 @@ export default function PromotionsClient() {
           >
             Create your first promotional banner.
           </div>
-
+            {permissionLoaded && canManagePromotions && (
           <button
             onClick={openCreateModal}
             style={{
@@ -633,7 +624,7 @@ export default function PromotionsClient() {
             }}
           >
             Create Banner
-          </button>
+          </button>)}
         </div>
       ) : filteredBanners.length === 0 ? (
         <div
@@ -800,6 +791,7 @@ export default function PromotionsClient() {
                     marginTop: "16px",
                   }}
                 >
+                  {permissionLoaded && canManagePromotions && (
                   <button
                     onClick={() => openEditModal(banner)}
                     style={{
@@ -815,8 +807,8 @@ export default function PromotionsClient() {
                     }}
                   >
                     Edit
-                  </button>
-
+                  </button>)}
+                    {permissionLoaded && canManagePromotions && (
                   <button
                     onClick={() => toggleBannerStatus(banner)}
                     style={{
@@ -836,7 +828,7 @@ export default function PromotionsClient() {
                     {banner.is_active
                       ? "Deactivate"
                       : "Activate"}
-                  </button>
+                  </button>)}
                 </div>
               </div>
             </div>
@@ -1135,7 +1127,12 @@ export default function PromotionsClient() {
 
                 <button
                   onClick={handleSave}
-                  disabled={saving || uploadingImage}
+                  disabled={
+  saving ||
+  uploadingImage ||
+  !permissionLoaded ||
+  !canManagePromotions
+}
                   style={{
                     border: "none",
                     background:

@@ -1,170 +1,159 @@
-// role permissions management for staff
-
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createClient as createAdminClient } from "@supabase/supabase-js";
 
 const MODULES = [
+  "dashboard",
   "orders",
+  "customers",
   "menu",
+  "combos",
+  "promotions",
   "coupons",
   "tables",
+  "qr_codes",
+  "reviews",
+  "analytics",
   "reports",
   "staff",
-  "promotions",
-  "reviews",
-  "qr_codes",
+  "settings",
+  "inventory",
+  "payments",
 ];
 
-const ACCESS_OPTIONS = [
-  "FULL",
-  "VIEW",
-  "NONE",
-];
+const ACCESS_OPTIONS = ["FULL", "VIEW", "NONE"] as const;
+
+type PermissionAccess = (typeof ACCESS_OPTIONS)[number];
 
 function getAdminClient() {
-  return createAdminClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    }
-  );
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !serviceKey) {
+    throw new Error("Supabase server configuration is missing.");
+  }
+
+  return createAdminClient(url, serviceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
 }
 
 async function getOwnerContext() {
-  const supabase =
-    await createClient();
+  const supabase = await createClient();
 
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser();
 
-  if (!user) return null;
+  if (authError || !user) return null;
 
-  const {
-    data: currentUser,
-  } = await supabase
+  const { data: currentUser, error: userError } = await supabase
     .from("users")
-    .select(
-      "id, restaurant_id, role_id, is_active"
-    )
+    .select("id, restaurant_id, role_id, is_active")
     .eq("auth_user_id", user.id)
     .maybeSingle();
 
-  if (
-    !currentUser ||
-    !currentUser.is_active
-  ) {
+  if (userError || !currentUser || !currentUser.is_active) {
     return null;
   }
 
-  const { data: role } =
-    await supabase
-      .from("roles")
-      .select("name")
-      .eq("id", currentUser.role_id)
-      .maybeSingle();
+  const admin = getAdminClient();
 
-  if (
-    !role ||
-    role.name !== "OWNER"
-  ) {
+  const { data: role, error: roleError } = await admin
+    .from("roles")
+    .select("name")
+    .eq("id", currentUser.role_id)
+    .maybeSingle();
+
+  if (roleError || role?.name !== "OWNER") {
     return null;
   }
 
-  return {
-    currentUser,
-  };
+  return { currentUser };
+}
+
+async function getRoleId(params: Promise<{ id: string }>) {
+  const { id } = await params;
+  const parsed = Number(id);
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
 }
 
 export async function GET(
   _request: Request,
-  {
-    params,
-  }: {
-    params: Promise<{
-      id: string;
-    }>;
-  }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const context =
-      await getOwnerContext();
+    const context = await getOwnerContext();
 
     if (!context) {
       return NextResponse.json(
-        {
-          error:
-            "Only the restaurant owner can manage permissions.",
-        },
+        { error: "Only the restaurant owner can manage permissions." },
         { status: 403 }
       );
     }
 
-    const { id } =
-      await params;
+    const roleId = await getRoleId(params);
 
-    const roleId =
-      Number(id);
+    if (roleId === null) {
+      return NextResponse.json(
+        { error: "Invalid role ID." },
+        { status: 400 }
+      );
+    }
 
-    const admin =
-      getAdminClient();
+    const admin = getAdminClient();
 
-    const {
-      data: role,
-    } = await admin
+    const { data: role, error: roleError } = await admin
       .from("roles")
       .select("id, name")
       .eq("id", roleId)
       .maybeSingle();
 
-    if (!role) {
+    if (roleError) {
       return NextResponse.json(
-        {
-          error:
-            "Role not found.",
-        },
-        { status: 404 }
-      );
-    }
-
-    const {
-      data,
-      error,
-    } = await admin
-      .from("permissions")
-      .select(
-        "id, role_id, module, access, created_at"
-      )
-      .eq("role_id", roleId)
-      .order("module", {
-        ascending: true,
-      });
-
-    if (error) {
-      return NextResponse.json(
-        {
-          error:
-            error.message,
-        },
+        { error: roleError.message },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({
-      permissions: data || [],
-    });
+    if (!role) {
+      return NextResponse.json(
+        { error: "Role not found." },
+        { status: 404 }
+      );
+    }
+
+    const { data, error } = await admin
+      .from("permissions")
+      .select("id, role_id, module, access, created_at")
+      .eq("role_id", roleId)
+      .order("module", { ascending: true });
+
+    if (error) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json(
+      { permissions: data ?? [] },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
   } catch (error) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Server error.",
+          error instanceof Error ? error.message : "Server error.",
       },
       { status: 500 }
     );
@@ -173,154 +162,144 @@ export async function GET(
 
 export async function PUT(
   request: Request,
-  {
-    params,
-  }: {
-    params: Promise<{
-      id: string;
-    }>;
-  }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const context =
-      await getOwnerContext();
+    const context = await getOwnerContext();
 
     if (!context) {
       return NextResponse.json(
-        {
-          error:
-            "Only the restaurant owner can manage permissions.",
-        },
+        { error: "Only the restaurant owner can manage permissions." },
         { status: 403 }
       );
     }
 
-    const { id } =
-      await params;
+    const roleId = await getRoleId(params);
 
-    const roleId =
-      Number(id);
+    if (roleId === null) {
+      return NextResponse.json(
+        { error: "Invalid role ID." },
+        { status: 400 }
+      );
+    }
 
-    const body =
-      await request.json();
+    let body: unknown;
 
-    const permissions =
-      Array.isArray(
-        body.permissions
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid JSON request body." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      !body ||
+      typeof body !== "object" ||
+      !Array.isArray(
+        (body as { permissions?: unknown }).permissions
       )
-        ? body.permissions
-        : [];
+    ) {
+      return NextResponse.json(
+        { error: "A permissions array is required." },
+        { status: 400 }
+      );
+    }
 
-    const admin =
-      getAdminClient();
+    const submitted = (
+      body as {
+        permissions: Array<{
+          module?: unknown;
+          access?: unknown;
+        }>;
+      }
+    ).permissions;
 
-    const {
-      data: role,
-    } = await admin
+    const submittedModules = new Set<string>();
+
+    for (const item of submitted) {
+      if (
+        !item ||
+        typeof item.module !== "string" ||
+        !MODULES.includes(item.module) ||
+        typeof item.access !== "string" ||
+        !ACCESS_OPTIONS.includes(item.access as PermissionAccess) ||
+        submittedModules.has(item.module)
+      ) {
+        return NextResponse.json(
+          { error: "Invalid or duplicate permission entry." },
+          { status: 400 }
+        );
+      }
+
+      submittedModules.add(item.module);
+    }
+
+    const admin = getAdminClient();
+
+    const { data: role, error: roleError } = await admin
       .from("roles")
       .select("id, name")
       .eq("id", roleId)
       .maybeSingle();
 
+    if (roleError) {
+      return NextResponse.json(
+        { error: roleError.message },
+        { status: 500 }
+      );
+    }
+
     if (!role) {
       return NextResponse.json(
-        {
-          error:
-            "Role not found.",
-        },
+        { error: "Role not found." },
         { status: 404 }
       );
     }
 
-    if (
-      role.name === "OWNER"
-    ) {
+    if (role.name === "OWNER") {
       return NextResponse.json(
-        {
-          error:
-            "Owner permissions are protected.",
-        },
+        { error: "Owner permissions are protected." },
         { status: 400 }
       );
     }
 
-    const cleanedPermissions =
-      MODULES.map(
-        (module) => {
-          const item =
-            permissions.find(
-              (permission: any) =>
-                permission.module ===
-                module
-            );
+    const cleanedPermissions = MODULES.map((module) => {
+  const item = submitted.find((p) => p.module === module);
 
-          const access =
-            ACCESS_OPTIONS.includes(
-              item?.access
-            )
-              ? item.access
-              : "NONE";
+  return {
+    role_id: roleId,
+    module,
+    access: item ? (item.access as PermissionAccess) : "NONE",
+    created_at: new Date().toISOString(),
+  };
+});
 
-          return {
-            role_id: roleId,
-            module,
-            access,
-            created_at:
-              new Date().toISOString(),
-          };
-        }
-      );
-
-    const {
-      error: deleteError,
-    } = await admin
+    // Requires a unique index on (role_id, module).
+    const { data, error } = await admin
       .from("permissions")
-      .delete()
-      .eq("role_id", roleId);
-
-    if (deleteError) {
-      return NextResponse.json(
-        {
-          error:
-            deleteError.message,
-        },
-        { status: 500 }
-      );
-    }
-
-    const {
-      data,
-      error,
-    } = await admin
-      .from("permissions")
-      .insert(
-        cleanedPermissions
-      )
-      .select(
-        "id, role_id, module, access, created_at"
-      );
+      .upsert(cleanedPermissions, {
+        onConflict: "role_id,module",
+      })
+      .select("id, role_id, module, access, created_at");
 
     if (error) {
       return NextResponse.json(
-        {
-          error:
-            error.message,
-        },
+        { error: error.message },
         { status: 500 }
       );
     }
 
-    return NextResponse.json({
-      permissions:
-        data || [],
-    });
+    return NextResponse.json(
+      { success: true, permissions: data ?? [] },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
   } catch (error) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Server error.",
+          error instanceof Error ? error.message : "Server error.",
       },
       { status: 500 }
     );
