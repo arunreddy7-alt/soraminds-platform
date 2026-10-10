@@ -1,8 +1,5 @@
-export default function Home() {
-  return (
-    <main>
-      <h1>Soraminds Platform</h1>
-      <p>Restaurant management platform</p>
-    </main>
-  );
+import { redirect } from "next/navigation";
+
+export default function HomePage() {
+  redirect("/platform/login");
 }
