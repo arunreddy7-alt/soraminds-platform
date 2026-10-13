@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
         session: existingSession,
         table: {
           id: table.id,
-          tableNumber: table.table_number,
+          tableNumber: String(table.table_number).trim(),
           seats: table.seats,
         },
         restaurant: {
@@ -204,7 +204,7 @@ export async function POST(request: NextRequest) {
             session: activeSession,
             table: {
               id: table.id,
-              tableNumber: table.table_number,
+              tableNumber: String(table.table_number).trim(),
               seats: table.seats,
             },
             restaurant: {
@@ -240,7 +240,7 @@ export async function POST(request: NextRequest) {
       session: createdSession,
       table: {
         id: table.id,
-        tableNumber: table.table_number,
+        tableNumber: String(table.table_number).trim(),
         seats: table.seats,
       },
       restaurant: {

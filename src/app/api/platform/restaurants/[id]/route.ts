@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  getRestaurantTimeZone,
+  isValidTimeZone,
+} from "@/lib/timezone";
 
 const privateHeaders = {
   "Cache-Control": "private, no-store",
@@ -107,6 +111,7 @@ export async function GET(
         accept_orders,
         is_active,
         features,
+        timezone,
         created_at,
         updated_at
       `)
@@ -287,6 +292,17 @@ export async function PATCH(
       updates.features = body.features;
     }
 
+    if ("timezone" in body) {
+      if (
+        typeof body.timezone !== "string" ||
+        !isValidTimeZone(body.timezone.trim())
+      ) {
+        return jsonError("Timezone must be a valid IANA timezone.", 400);
+      }
+
+      updates.timezone = getRestaurantTimeZone(body.timezone.trim());
+    }
+
     if (Object.keys(updates).length === 0) {
       return jsonError("No valid fields to update.", 400);
     }
@@ -309,6 +325,7 @@ export async function PATCH(
         accept_orders,
         is_active,
         features,
+        timezone,
         created_at,
         updated_at
       `)

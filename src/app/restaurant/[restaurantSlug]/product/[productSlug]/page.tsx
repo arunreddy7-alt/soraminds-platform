@@ -12,14 +12,22 @@ type ProductPageProps = {
 export default async function ProductPage({
   params,
 }: ProductPageProps) {
+  return (
+    <Suspense fallback={<div>Loading product...</div>}>
+      <ProductPageContent params={params} />
+    </Suspense>
+  );
+}
+
+async function ProductPageContent({
+  params,
+}: ProductPageProps) {
   const { restaurantSlug, productSlug } = await params;
 
   return (
-    <Suspense fallback={<div>Loading product...</div>}>
-      <ProductDetailsClient
-        restaurantSlug={restaurantSlug}
-        productSlug={productSlug}
-      />
-    </Suspense>
+    <ProductDetailsClient
+      restaurantSlug={restaurantSlug}
+      productSlug={productSlug}
+    />
   );
 }

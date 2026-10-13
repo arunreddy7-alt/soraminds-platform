@@ -2,12 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  formatTimestamp,
+  getRestaurantTimeZone,
+} from "@/lib/timezone";
 
 type Order = {
   id: number;
   customer_id: number | null;
   order_type: string;
   table_id: number | null;
+  table_number: string | null;
   status: string;
   subtotal: number;
   menu_discount: number;
@@ -98,15 +103,14 @@ function formatOrderType(type: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function formatDateTime(date: string) {
-  return new Intl.DateTimeFormat("en-IN", {
+function formatDateTime(date: string, timeZone: string) {
+  return formatTimestamp(date, timeZone, {
     day: "2-digit",
     month: "short",
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-    timeZone: "Asia/Kolkata",
-  }).format(new Date(date));
+  });
 }
 
 function getNextStatus(status: string) {
@@ -213,6 +217,8 @@ useEffect(() => {
 
   const [restaurantId, setRestaurantId] =
     useState<number | null>(null);
+  const [restaurantTimeZone, setRestaurantTimeZone] =
+    useState("Asia/Kolkata");
 
   async function getRestaurantId() {
     const supabase = createClient();
@@ -250,6 +256,19 @@ useEffect(() => {
 
       setRestaurantId(id);
 
+      const { data: restaurantData, error: restaurantError } =
+        await supabase
+          .from("restaurants")
+          .select("id")
+          .eq("id", id)
+          .single();
+
+      if (restaurantError) {
+        throw restaurantError;
+      }
+
+      setRestaurantTimeZone("Asia/Kolkata");
+
       const { data: ordersData, error: ordersError } =
         await supabase
           .from("orders")
@@ -283,7 +302,41 @@ useEffect(() => {
 
       const loadedOrders = (ordersData || []) as Order[];
 
-      setOrders(loadedOrders);
+      const tableIds = Array.from(
+        new Set(
+          loadedOrders
+            .map((order) => order.table_id)
+            .filter((tableId): tableId is number => tableId !== null)
+        )
+      );
+
+      const tableNumbers = new Map<number, string>();
+
+      if (tableIds.length > 0) {
+        const { data: tablesData, error: tablesError } = await supabase
+          .from("tables")
+          .select("id, table_number")
+          .in("id", tableIds)
+          .eq("restaurant_id", id);
+
+        if (tablesError) {
+          throw tablesError;
+        }
+
+        for (const table of tablesData || []) {
+          tableNumbers.set(table.id, String(table.table_number));
+        }
+      }
+
+      const ordersWithTableNumbers = loadedOrders.map((order) => ({
+        ...order,
+        table_number:
+          order.table_id === null
+            ? null
+            : tableNumbers.get(order.table_id) || null,
+      }));
+
+      setOrders(ordersWithTableNumbers);
 
       const customerIds = Array.from(
         new Set(
@@ -929,8 +982,21 @@ async function updateOrderStatus(
                             "1px solid #f0f1f3",
                         }}
                       >
-                        {formatOrderType(
-                          order.order_type
+                        <div>
+                          {formatOrderType(order.order_type)}
+                        </div>
+                        {order.order_type === "DINE_IN" && (
+                          <div
+                            style={{
+                              marginTop: "3px",
+                              fontSize: "10px",
+                              color: "#858a94",
+                            }}
+                          >
+                            {order.table_number
+                              ? `Table ${order.table_number}`
+                              : "Table not available"}
+                          </div>
                         )}
                       </td>
 
@@ -1031,7 +1097,8 @@ async function updateOrderStatus(
                         }}
                       >
                         {formatDateTime(
-                          order.created_at
+                          order.created_at,
+                          restaurantTimeZone
                         )}
                       </td>
 
@@ -1189,8 +1256,8 @@ async function updateOrderStatus(
                   }}
                 >
                   {formatDateTime(
-                    selectedOrder.order
-                      .created_at
+                    selectedOrder.order.created_at,
+                    restaurantTimeZone
                   )}
                 </div>
               </div>
@@ -1274,6 +1341,25 @@ async function updateOrderStatus(
                 >
                   {selectedOrder.customer.phone}
                 </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                padding: "14px 22px",
+                borderBottom: "1px solid #eef0f2",
+                fontSize: "12px",
+                color: "#555a63",
+              }}
+            >
+              <strong>Order mode:</strong>{" "}
+              {formatOrderType(selectedOrder.order.order_type)}
+              {selectedOrder.order.order_type === "DINE_IN" && (
+                <>
+                  {" · "}
+                  <strong>Table:</strong>{" "}
+                  {selectedOrder.order.table_number || "Not available"}
+                </>
               )}
             </div>
 

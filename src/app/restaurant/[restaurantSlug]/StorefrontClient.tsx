@@ -83,7 +83,7 @@ type TableSession = {
 
 type TableInfo = {
   id: number;
-  tableNumber: number | string;
+  tableNumber: string;
   seats: number;
 };
 
@@ -193,14 +193,13 @@ export default function StorefrontClient({
 
       const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-            "Unable to load restaurant."
-        );
-      }
+if (!response.ok) {
+  throw new Error(
+    data.error ?? "Unable to load restaurant."
+  );
+}
 
-      setRestaurant(data.restaurant);
+setRestaurant(data.restaurant);
       setCategories(data.categories || []);
       setProducts(data.products || []);
       setCombos(data.combos || []);
@@ -646,17 +645,15 @@ export default function StorefrontClient({
                   color: accent,
                 }}
               >
-                {orderType === "DINE_IN"
-  ? `🍽️ DINE-IN${
-      tableInfo
+               {orderType === "DINE_IN"
+  ? `DINE-IN${
+      tableInfo?.tableNumber
         ? ` • TABLE ${tableInfo.tableNumber}`
-        : tableId
-          ? ` • TABLE ${tableId}`
-          : ""
+        : ""
     }`
   : orderType === "DELIVERY"
-    ? "🛵 DELIVERY"
-    : "🥡 TAKEAWAY"}
+  ? "DELIVERY"
+  : "TAKEAWAY"}
               </div>
             </div>
 

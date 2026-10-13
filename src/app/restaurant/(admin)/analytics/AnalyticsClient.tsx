@@ -2,6 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  addCalendarDays,
+  formatTimestamp,
+  getLocalDate,
+  parseTimestamp,
+  getRestaurantTimeZone,
+  getZonedDateRange,
+} from "@/lib/timezone";
 
 type RangeType =
   | "today"
@@ -65,31 +73,6 @@ type AnalyticsData = {
   customers: Customer[];
 };
 
-function getDateString(date: Date) {
-  const year = date.getFullYear();
-  const month = String(
-    date.getMonth() + 1
-  ).padStart(2, "0");
-  const day = String(date.getDate()).padStart(
-    2,
-    "0"
-  );
-
-  return `${year}-${month}-${day}`;
-}
-
-function startOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
-}
-
-function endOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
-  return result;
-}
-
 function formatCurrency(value: number) {
   return `₹${value.toLocaleString("en-IN", {
     maximumFractionDigits: 2,
@@ -100,8 +83,8 @@ function formatNumber(value: number) {
   return value.toLocaleString("en-IN");
 }
 
-function formatDateLabel(date: Date) {
-  return date.toLocaleDateString("en-IN", {
+function formatDateLabel(date: Date, timeZone: string) {
+  return formatTimestamp(date.toISOString(), timeZone, {
     day: "2-digit",
     month: "short",
   });
@@ -124,6 +107,8 @@ export default function AnalyticsClient() {
 
   const [restaurantId, setRestaurantId] =
     useState<number | null>(null);
+  const [restaurantTimeZone, setRestaurantTimeZone] =
+    useState("Asia/Kolkata");
 
   const [data, setData] =
     useState<AnalyticsData>({
@@ -181,46 +166,32 @@ export default function AnalyticsClient() {
       return userData.restaurant_id;
     };
 
-  const getDateRange = () => {
-    const now = new Date();
+  const getDateRange = (timeZone: string) => {
+    const today = getLocalDate(new Date(), timeZone);
 
     if (range === "today") {
-      return {
-        start: startOfDay(now),
-        end: endOfDay(now),
-      };
+      return getZonedDateRange(today, today, timeZone);
     }
 
     if (range === "yesterday") {
-      const yesterday = new Date(now);
-      yesterday.setDate(
-        yesterday.getDate() - 1
-      );
-
-      return {
-        start: startOfDay(yesterday),
-        end: endOfDay(yesterday),
-      };
+      const yesterday = addCalendarDays(today, -1);
+      return getZonedDateRange(yesterday, yesterday, timeZone);
     }
 
     if (range === "7days") {
-      const start = new Date(now);
-      start.setDate(start.getDate() - 6);
-
-      return {
-        start: startOfDay(start),
-        end: endOfDay(now),
-      };
+      return getZonedDateRange(
+        addCalendarDays(today, -6),
+        today,
+        timeZone
+      );
     }
 
     if (range === "30days") {
-      const start = new Date(now);
-      start.setDate(start.getDate() - 29);
-
-      return {
-        start: startOfDay(start),
-        end: endOfDay(now),
-      };
+      return getZonedDateRange(
+        addCalendarDays(today, -29),
+        today,
+        timeZone
+      );
     }
 
     if (
@@ -228,24 +199,14 @@ export default function AnalyticsClient() {
       customStart &&
       customEnd
     ) {
-      const start = new Date(
-        `${customStart}T00:00:00`
+      return getZonedDateRange(
+        customStart,
+        customEnd,
+        timeZone
       );
-
-      const end = new Date(
-        `${customEnd}T23:59:59`
-      );
-
-      return {
-        start,
-        end,
-      };
     }
 
-    return {
-      start: startOfDay(now),
-      end: endOfDay(now),
-    };
+    return getZonedDateRange(today, today, timeZone);
   };
 
   const loadAnalytics = async (
@@ -267,10 +228,24 @@ export default function AnalyticsClient() {
         currentRestaurantId
       );
 
+      const { data: restaurant, error: restaurantError } =
+        await supabase
+          .from("restaurants")
+          .select("id")
+          .eq("id", currentRestaurantId)
+          .single();
+
+      if (restaurantError) {
+        throw new Error(restaurantError.message);
+      }
+
+      const timeZone = getRestaurantTimeZone(null);
+      setRestaurantTimeZone(timeZone);
+
       const {
         start,
         end,
-      } = getDateRange();
+      } = getDateRange(timeZone);
 
       let ordersQuery = supabase
         .from("orders")
@@ -300,11 +275,11 @@ export default function AnalyticsClient() {
         .eq("status", "COMPLETED")
         .gte(
           "created_at",
-          start.toISOString()
+          start
         )
         .lte(
           "created_at",
-          end.toISOString()
+          end
         )
         .order("created_at", {
           ascending: true,
@@ -550,12 +525,15 @@ export default function AnalyticsClient() {
 
     data.orders.forEach(
       (order) => {
-        const date = new Date(
-          order.created_at
-        );
+        const date = parseTimestamp(order.created_at);
+        if (!date) {
+          return;
+        }
 
-        const key =
-          getDateString(date);
+        const key = getLocalDate(
+          date,
+          restaurantTimeZone
+        );
 
         const existing =
           groups.get(key);
@@ -698,13 +676,13 @@ export default function AnalyticsClient() {
 
     data.orders.forEach(
       (order) => {
-        const date =
-          new Date(
-            order.created_at
-          );
-
-        const hour =
-          date.getHours();
+        const hour = Number(
+          new Intl.DateTimeFormat("en-IN", {
+            hour: "numeric",
+            hour12: false,
+            timeZone: restaurantTimeZone,
+          }).format(parseTimestamp(order.created_at) ?? new Date())
+        );
 
         const existing =
           hours.get(hour);
@@ -803,23 +781,19 @@ export default function AnalyticsClient() {
           const firstOrder =
             [...orders].sort(
               (a, b) =>
-                new Date(
-                  a.created_at
-                ).getTime() -
-                new Date(
-                  b.created_at
-                ).getTime()
+                (parseTimestamp(a.created_at)?.getTime() ?? 0) -
+                (parseTimestamp(b.created_at)?.getTime() ?? 0)
             )[0];
 
           const customerCreated =
-            new Date(
-              customer.created_at
-            );
+            parseTimestamp(customer.created_at);
 
           const firstOrderDate =
-            new Date(
-              firstOrder.created_at
-            );
+            parseTimestamp(firstOrder.created_at);
+
+          if (!customerCreated || !firstOrderDate) {
+            return;
+          }
 
           const isNew =
             customerCreated >=
@@ -1485,9 +1459,7 @@ export default function AnalyticsClient() {
 
                 return (
                   <div
-                    key={getDateString(
-                      item.date
-                    )}
+                    key={item.date.toISOString()}
                     style={{
                       minWidth: "55px",
                       height: "205px",
@@ -1525,7 +1497,8 @@ export default function AnalyticsClient() {
                           "5px 5px 2px 2px",
                       }}
                       title={`${formatDateLabel(
-                        item.date
+                        item.date,
+                        restaurantTimeZone
                       )}: ${formatCurrency(
                         item.revenue
                       )}`}
@@ -1541,7 +1514,8 @@ export default function AnalyticsClient() {
                       }}
                     >
                       {formatDateLabel(
-                        item.date
+                        item.date,
+                        restaurantTimeZone
                       )}
                     </div>
                   </div>

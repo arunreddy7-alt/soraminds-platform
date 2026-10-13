@@ -15,6 +15,8 @@ type DeliveryDetails = {
   phone: string;
   address: string;
   pincode: string;
+  latitude: number | null;
+  longitude: number | null;
 };
 
 export default function DeliveryCheckoutClient({
@@ -30,9 +32,17 @@ export default function DeliveryCheckoutClient({
     phone: "",
     address: "",
     pincode: "",
+    latitude: null,
+    longitude: null,
   });
   const [paymentMethod, setPaymentMethod] = useState<"CASH" | "UPI">("CASH");
   const [deliveryFee, setDeliveryFee] = useState(0);
+  const [distanceKm, setDistanceKm] = useState<number | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [couponCode, setCouponCode] = useState("");
+  const [appliedCoupon, setAppliedCoupon] = useState("");
+  const [couponDiscount, setCouponDiscount] = useState(0);
+  const [couponLoading, setCouponLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -41,57 +51,136 @@ export default function DeliveryCheckoutClient({
   );
 
   useEffect(() => {
-    setItems(getDeliveryCart(restaurantSlug));
+    const timer = window.setTimeout(() => {
+      setItems(getDeliveryCart(restaurantSlug));
 
-    try {
-      const saved = sessionStorage.getItem(
-        `soraminds_delivery_details_${restaurantSlug}`
-      );
-
-      if (saved) {
-        setDetails((current) => ({
-          ...current,
-          ...JSON.parse(saved),
-        }));
-      }
-    } catch {
-      // Ignore invalid saved delivery details.
-    }
-
-    async function loadSettings() {
       try {
-        const response = await fetch(
-          `/api/customer/storefront/${encodeURIComponent(
-            restaurantSlug
-          )}/delivery`,
-          { cache: "no-store" }
+        const saved = sessionStorage.getItem(
+          `soraminds_delivery_details_${restaurantSlug}`
         );
 
-        const data = await response.json();
-
-        if (response.ok) {
-          setDeliveryFee(
-            Number(data.deliverySettings?.delivery_fee ?? 0)
-          );
+        if (saved) {
+          setDetails((current) => ({
+            ...current,
+            ...JSON.parse(saved),
+          }));
         }
       } catch {
-        // Settings can be rechecked by the server when placing the order.
-      } finally {
-        setLoading(false);
+        // Ignore invalid saved delivery details.
       }
-    }
 
-    void loadSettings();
+      setLoading(false);
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [restaurantSlug]);
 
+  useEffect(() => {
+    if (
+      details.latitude === null ||
+      details.longitude === null
+    ) {
+      const resetTimer = window.setTimeout(() => {
+        setDeliveryFee(0);
+        setDistanceKm(null);
+      }, 0);
+      return () => window.clearTimeout(resetTimer);
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        setRouteLoading(true);
+        setError("");
+        const response = await fetch("/api/customer/delivery/quote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            restaurantSlug,
+            latitude: details.latitude,
+            longitude: details.longitude,
+          }),
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || "Unable to calculate delivery fee.");
+        }
+
+        setDistanceKm(Number(data.distanceKm));
+        setDeliveryFee(Number(data.deliveryFee));
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setDistanceKm(null);
+          setDeliveryFee(0);
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Unable to calculate delivery fee."
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) setRouteLoading(false);
+      }
+    }, 350);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [details.latitude, details.longitude, restaurantSlug]);
+
   const subtotal = getDeliveryCartTotal(items);
-  const total = subtotal + deliveryFee;
+  const total = Math.max(0, subtotal - couponDiscount + deliveryFee);
 
   function updateDetail<K extends keyof DeliveryDetails>(
     field: K,
     value: DeliveryDetails[K]
   ) {
     setDetails((current) => ({ ...current, [field]: value }));
+  }
+
+  async function applyCoupon() {
+    setError("");
+
+    if (!couponCode.trim()) {
+      setError("Enter a coupon code.");
+      return;
+    }
+
+    try {
+      setCouponLoading(true);
+
+      const response = await fetch("/api/customer/coupons", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          restaurantSlug,
+          code: couponCode.trim(),
+          subtotal,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Unable to apply coupon.");
+      }
+
+      setAppliedCoupon(data.code);
+      setCouponDiscount(Number(data.discount) || 0);
+    } catch (err) {
+      setAppliedCoupon("");
+      setCouponDiscount(0);
+      setError(
+        err instanceof Error ? err.message : "Unable to apply coupon."
+      );
+    } finally {
+      setCouponLoading(false);
+    }
   }
 
   async function placeOrder() {
@@ -122,6 +211,16 @@ export default function DeliveryCheckoutClient({
       return;
     }
 
+    if (
+      details.latitude === null ||
+      details.longitude === null ||
+      distanceKm === null ||
+      routeLoading
+    ) {
+      setError("Select a delivery location and wait for the delivery fee.");
+      return;
+    }
+
     try {
       setSubmitting(true);
 
@@ -144,10 +243,13 @@ export default function DeliveryCheckoutClient({
             variantId: item.variantId,
             quantity: item.quantity,
           })),
+          couponCode: appliedCoupon || null,
           delivery: {
             pincode: details.pincode.trim(),
             address: details.address.trim(),
             deliveryFee,
+            latitude: details.latitude,
+            longitude: details.longitude,
           },
         }),
       });
@@ -292,6 +394,62 @@ export default function DeliveryCheckoutClient({
                 inputMode="numeric"
                 autoComplete="postal-code"
               />
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  style={secondaryButton}
+                  onClick={() => {
+                    if (!navigator.geolocation) {
+                      setError("Location is not available in this browser.");
+                      return;
+                    }
+                    navigator.geolocation.getCurrentPosition(
+                      (position) => {
+                        updateDetail("latitude", position.coords.latitude);
+                        updateDetail("longitude", position.coords.longitude);
+                      },
+                      () => setError("Location permission was not granted.")
+                    );
+                  }}
+                >
+                  Use current location
+                </button>
+                <input
+                  style={{ ...inputStyle, flex: "1 1 150px" }}
+                  type="number"
+                  step="any"
+                  placeholder="Latitude"
+                  value={details.latitude ?? ""}
+                  onChange={(event) =>
+                    updateDetail(
+                      "latitude",
+                      event.target.value === ""
+                        ? null
+                        : Number(event.target.value)
+                    )
+                  }
+                />
+                <input
+                  style={{ ...inputStyle, flex: "1 1 150px" }}
+                  type="number"
+                  step="any"
+                  placeholder="Longitude"
+                  value={details.longitude ?? ""}
+                  onChange={(event) =>
+                    updateDetail(
+                      "longitude",
+                      event.target.value === ""
+                        ? null
+                        : Number(event.target.value)
+                    )
+                  }
+                />
+              </div>
+              <small style={{ color: "#667085" }}>
+                Select your location or enter map coordinates to calculate the
+                driving distance and fee.
+              </small>
             </div>
 
             <h2 style={{ ...sectionHeading, marginTop: 28 }}>
@@ -380,8 +538,47 @@ export default function DeliveryCheckoutClient({
             </div>
 
             <div style={summaryRow}>
+              <span>Driving distance</span>
+              <span>
+                {routeLoading
+                  ? "Calculating..."
+                  : distanceKm === null
+                  ? "Not selected"
+                  : `${distanceKm.toFixed(2)} km`}
+              </span>
+            </div>
+
+            <div style={summaryRow}>
               <span>Delivery fee</span>
               <span>₹{deliveryFee.toFixed(2)}</span>
+            </div>
+
+            <div style={{ margin: "18px 0" }}>
+              <label style={{ display: "block", marginBottom: 8 }}>
+                Coupon
+              </label>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  style={{ ...inputStyle, flex: 1 }}
+                  value={couponCode}
+                  onChange={(event) => setCouponCode(event.target.value)}
+                  placeholder="Enter coupon code"
+                  disabled={couponLoading || Boolean(appliedCoupon)}
+                />
+                <button
+                  type="button"
+                  onClick={applyCoupon}
+                  disabled={couponLoading || Boolean(appliedCoupon)}
+                  style={secondaryButton}
+                >
+                  {couponLoading ? "Checking..." : appliedCoupon ? "Applied" : "Apply"}
+                </button>
+              </div>
+              {appliedCoupon && (
+                <div style={{ marginTop: 8, color: "#027a48", fontSize: 13 }}>
+                  {appliedCoupon} applied · -₹{couponDiscount.toFixed(2)}
+                </div>
+              )}
             </div>
 
             <hr style={{ border: 0, borderTop: "1px solid #eaecf0" }} />
@@ -454,6 +651,17 @@ const primaryButton: React.CSSProperties = {
   color: "#fff",
   fontWeight: 700,
   cursor: "pointer",
+};
+
+const secondaryButton: React.CSSProperties = {
+  padding: "10px 12px",
+  border: "1px solid #d0d5dd",
+  borderRadius: 8,
+  background: "#fff",
+  color: "#202228",
+  fontWeight: 700,
+  cursor: "pointer",
+  whiteSpace: "nowrap",
 };
 
 const backButton: React.CSSProperties = {

@@ -2,6 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  formatDateTimeLocal,
+  formatTimestamp,
+  getRestaurantTimeZone,
+  localDateTimeToUtcIso,
+} from "@/lib/timezone";
 
 type Coupon = {
   id: number;
@@ -27,6 +33,8 @@ export default function CouponsClient() {
     null
   );
   const [restaurantName, setRestaurantName] = useState("");
+  const [restaurantTimeZone, setRestaurantTimeZone] =
+    useState("Asia/Kolkata");
   const [coupons, setCoupons] = useState<Coupon[]>([]);
 
   const [loading, setLoading] = useState(true);
@@ -178,6 +186,7 @@ export default function CouponsClient() {
       }
 
       setRestaurantName(restaurantResult.data?.name || "");
+      setRestaurantTimeZone("Asia/Kolkata");
       setCoupons((couponsResult.data as Coupon[]) || []);
     } catch (err: any) {
       console.error(err);
@@ -208,15 +217,7 @@ export default function CouponsClient() {
   function formatDateForInput(value: string) {
     if (!value) return "";
 
-    const date = new Date(value);
-
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const hours = String(date.getHours()).padStart(2, "0");
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
+    return formatDateTimeLocal(value, restaurantTimeZone);
   }
 
   function openEditModal(coupon: Coupon) {
@@ -331,18 +332,24 @@ export default function CouponsClient() {
         return;
       }
 
-      const startDate = new Date(startAt);
-      const endDate = new Date(endAt);
+      let startIso: string;
+      let endIso: string;
 
-      if (
-        Number.isNaN(startDate.getTime()) ||
-        Number.isNaN(endDate.getTime())
-      ) {
+      try {
+        startIso = localDateTimeToUtcIso(
+          startAt,
+          restaurantTimeZone
+        );
+        endIso = localDateTimeToUtcIso(
+          endAt,
+          restaurantTimeZone
+        );
+      } catch {
         setError("Please enter valid dates.");
         return;
       }
 
-      if (endDate <= startDate) {
+      if (endIso <= startIso) {
         setError("End date must be after the start date.");
         return;
       }
@@ -380,8 +387,8 @@ export default function CouponsClient() {
           discountType === "percentage"
             ? maximumDiscount
             : null,
-        start_at: startDate.toISOString(),
-        end_at: endDate.toISOString(),
+        start_at: startIso,
+        end_at: endIso,
         usage_limit: limit,
         updated_at: now,
       };
@@ -481,7 +488,7 @@ async function toggleCouponStatus(coupon: Coupon) {
   }
 
   function formatDate(value: string) {
-    return new Date(value).toLocaleString("en-IN", {
+    return formatTimestamp(value, restaurantTimeZone, {
       dateStyle: "medium",
       timeStyle: "short",
     });

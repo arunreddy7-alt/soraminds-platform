@@ -6,7 +6,6 @@ import {
 } from "react";
 
 import {
-  usePathname,
   useRouter,
   useSearchParams,
 } from "next/navigation";
@@ -65,15 +64,14 @@ type TableSession = {
 export default function ProductDetailsClient({
   restaurantSlug,
   productSlug,
+  isDeliveryPage = false,
 }: {
   restaurantSlug: string;
   productSlug: string;
+  isDeliveryPage?: boolean;
 }) {
  const router = useRouter();
 const searchParams = useSearchParams();
-const pathname = usePathname();
-
-const isDeliveryPage = pathname.includes("/delivery/product/");
 
 const orderType = isDeliveryPage
   ? "DELIVERY"
@@ -125,6 +123,9 @@ const orderType = isDeliveryPage
 
   const [tableSession, setTableSession] =
     useState<TableSession | null>(null);
+
+  const [tableNumber, setTableNumber] =
+    useState<string | null>(null);
 
   const [addingToCart, setAddingToCart] =
     useState(false);
@@ -245,6 +246,12 @@ const orderType = isDeliveryPage
           if (data.session) {
             setTableSession(data.session);
 
+setTableNumber(
+  data.table?.tableNumber != null
+    ? String(data.table.tableNumber)
+    : null
+);
+
             try {
               localStorage.setItem(
                 `soraminds-table-session-${restaurantSlug}`,
@@ -299,6 +306,17 @@ const orderType = isDeliveryPage
       }
 
       setTableSession(data.session);
+setTableNumber(
+  data.table?.tableNumber != null
+    ? String(data.table.tableNumber)
+    : null
+);
+
+setTableNumber(
+  data.table?.tableNumber != null
+    ? String(data.table.tableNumber)
+    : null
+);
 
       try {
         localStorage.setItem(
@@ -928,12 +946,14 @@ const orderType = isDeliveryPage
               }}
             >
               {orderType === "DINE_IN"
-                ? `DINE-IN${
-                    tableId
-                      ? ` • TABLE ${tableId}`
-                      : ""
-                  }`
-                : "TAKEAWAY"}
+  ? `DINE-IN${
+      tableNumber
+        ? ` • TABLE ${tableNumber}`
+        : ""
+    }`
+  : orderType === "DELIVERY"
+  ? "DELIVERY"
+  : "TAKEAWAY"}
             </div>
 
             <div
@@ -949,6 +969,8 @@ const orderType = isDeliveryPage
                   : sessionLoading
                   ? "Preparing shared table cart..."
                   : "Preparing table session..."
+                : orderType === "DELIVERY"
+                ? "Your order will be delivered to your address."
                 : "Your order will be prepared for takeaway."}
             </div>
           </div>

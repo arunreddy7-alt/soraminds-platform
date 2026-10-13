@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseTimestamp } from "@/lib/timezone";
 
 type CouponPayload = {
   couponId?: number;
@@ -157,8 +158,8 @@ function validateCoupon(body: CouponPayload) {
       ? null
       : Number(body.usage_limit);
 
-  const startDate = new Date(body.start_at ?? "");
-  const endDate = new Date(body.end_at ?? "");
+  const startDate = parseTimestamp(body.start_at);
+  const endDate = parseTimestamp(body.end_at);
 
   if (!code) {
     return { error: "Coupon code is required." };
@@ -204,8 +205,8 @@ function validateCoupon(body: CouponPayload) {
   if (
     !body.start_at ||
     !body.end_at ||
-    Number.isNaN(startDate.getTime()) ||
-    Number.isNaN(endDate.getTime())
+    !startDate ||
+    !endDate
   ) {
     return { error: "Valid start and end dates are required." };
   }

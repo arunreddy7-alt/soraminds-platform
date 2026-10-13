@@ -121,7 +121,7 @@ export async function POST(request: Request) {
 
       table: {
         id: table.id,
-        tableNumber: table.table_number,
+        tableNumber: String(table.table_number).trim(),
         seats: table.seats,
         status: table.status,
       },

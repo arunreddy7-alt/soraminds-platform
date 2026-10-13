@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { DeliveryPricingTier } from "@/lib/delivery-pricing";
 
 type DeliverySettings = {
   is_enabled: boolean;
@@ -11,6 +12,9 @@ type DeliverySettings = {
   estimated_delivery_minutes: number;
   origin_latitude: number | null;
   origin_longitude: number | null;
+  delivery_address: string;
+  max_delivery_distance_km: number;
+  pricing_tiers: DeliveryPricingTier[];
   fee_0_3_km: number;
   fee_3_5_km: number;
   fee_5_10_km: number;
@@ -24,6 +28,13 @@ const defaults: DeliverySettings = {
   estimated_delivery_minutes: 40,
   origin_latitude: null,
   origin_longitude: null,
+  delivery_address: "",
+  max_delivery_distance_km: 10,
+  pricing_tiers: [
+    { min_km: 0, max_km: 3, fee: 60 },
+    { min_km: 3, max_km: 7, fee: 100 },
+    { min_km: 7, max_km: null, fee: 150 },
+  ],
   fee_0_3_km: 30,
   fee_3_5_km: 50,
   fee_5_10_km: 80,
@@ -100,6 +111,7 @@ export default function DeliverySettingsPage() {
           [key]: null,
         }));
       }
+
       return;
     }
 
@@ -111,6 +123,44 @@ export default function DeliverySettingsPage() {
       ...previous,
       [key]: number,
     }));
+  }
+
+  function updateTier(
+    index: number,
+    key: keyof DeliveryPricingTier,
+    value: string
+  ) {
+    setSettings((previous) => ({
+      ...previous,
+      pricing_tiers: previous.pricing_tiers.map((tier, tierIndex) =>
+        tierIndex === index
+          ? {
+              ...tier,
+              [key]:
+                key === "max_km" && value.trim() === ""
+                  ? null
+                  : Number(value),
+            }
+          : tier
+      ),
+    }));
+  }
+
+  function addTier() {
+    setSettings((previous) => {
+      const last = previous.pricing_tiers[previous.pricing_tiers.length - 1];
+      return {
+        ...previous,
+        pricing_tiers: [
+          ...previous.pricing_tiers,
+          {
+            min_km: last?.max_km ?? previous.max_delivery_distance_km,
+            max_km: null,
+            fee: 0,
+          },
+        ],
+      };
+    });
   }
 
   async function saveSettings(event: React.FormEvent<HTMLFormElement>) {
@@ -153,6 +203,16 @@ export default function DeliverySettingsPage() {
       return;
     }
 
+    if (
+      settings.max_delivery_distance_km <= 0 ||
+      settings.pricing_tiers.length === 0
+    ) {
+      setError(
+        "Configure a valid maximum distance and at least one pricing tier."
+      );
+      return;
+    }
+
     try {
       setSaving(true);
 
@@ -168,6 +228,9 @@ const payload = {
   fee_0_3_km: settings.fee_0_3_km,
   fee_3_5_km: settings.fee_3_5_km,
   fee_5_10_km: settings.fee_5_10_km,
+  delivery_address: settings.delivery_address,
+  max_delivery_distance_km: settings.max_delivery_distance_km,
+  pricing_tiers: settings.pricing_tiers,
 };
 
 const response = await fetch("/api/restaurant/delivery/settings", {
@@ -282,6 +345,108 @@ const response = await fetch("/api/restaurant/delivery/settings", {
         </section>
 
         <section className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-semibold text-gray-900">
+                Dynamic distance pricing
+              </h2>
+              <p className="mt-1 text-sm text-gray-500">
+                Add contiguous tiers that cover the complete delivery radius.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={addTier}
+              className="rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold"
+            >
+              Add tier
+            </button>
+          </div>
+
+          <div>
+            <label htmlFor="maxDistance" className={labelClass}>
+              Maximum delivery distance (km)
+            </label>
+            <input
+              id="maxDistance"
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={settings.max_delivery_distance_km}
+              onChange={(event) =>
+                updateNumber("max_delivery_distance_km", event.target.value)
+              }
+              className={inputClass}
+            />
+          </div>
+
+          <div className="space-y-3">
+            {settings.pricing_tiers.map((tier, index) => (
+              <div
+                key={`${index}-${tier.min_km}`}
+                className="grid gap-3 rounded-lg border border-gray-200 p-4 sm:grid-cols-[1fr_1fr_1fr_auto]"
+              >
+                <label className="text-xs text-gray-500">
+                  Minimum km
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={tier.min_km}
+                    onChange={(event) =>
+                      updateTier(index, "min_km", event.target.value)
+                    }
+                    className={inputClass}
+                  />
+                </label>
+                <label className="text-xs text-gray-500">
+                  Maximum km
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={tier.max_km ?? ""}
+                    onChange={(event) =>
+                      updateTier(index, "max_km", event.target.value)
+                    }
+                    placeholder="Final tier"
+                    className={inputClass}
+                  />
+                </label>
+                <label className="text-xs text-gray-500">
+                  Fee (₹)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={tier.fee}
+                    onChange={(event) =>
+                      updateTier(index, "fee", event.target.value)
+                    }
+                    className={inputClass}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={settings.pricing_tiers.length === 1}
+                  onClick={() =>
+                    setSettings((previous) => ({
+                      ...previous,
+                      pricing_tiers: previous.pricing_tiers.filter(
+                        (_, tierIndex) => tierIndex !== index
+                      ),
+                    }))
+                  }
+                  className="self-end rounded-lg border border-red-200 px-3 py-2 text-sm text-red-700 disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="space-y-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
           <div>
             <h2 className="font-semibold text-gray-900">
               Restaurant location
@@ -292,6 +457,21 @@ const response = await fetch("/api/restaurant/delivery/settings", {
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label htmlFor="deliveryAddress" className={labelClass}>
+                Restaurant delivery address
+              </label>
+              <input
+                id="deliveryAddress"
+                type="text"
+                value={settings.delivery_address}
+                onChange={(event) =>
+                  updateSetting("delivery_address", event.target.value)
+                }
+                placeholder="Address used as the delivery origin"
+                className={inputClass}
+              />
+            </div>
             <div>
               <label htmlFor="latitude" className={labelClass}>
                 Latitude

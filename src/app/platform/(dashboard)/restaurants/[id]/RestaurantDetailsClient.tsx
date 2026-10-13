@@ -22,6 +22,7 @@ type Restaurant = {
   accent_color: string | null;
   is_open: boolean;
   accept_orders: boolean;
+  timezone: string | null;
   is_active: boolean;
   features: Features | null;
   created_at: string;
@@ -563,6 +564,11 @@ export default function RestaurantDetailsClient() {
           <InfoItem
             label="Slug"
             value={restaurant.slug}
+          />
+
+          <InfoItem
+            label="Timezone"
+            value={restaurant.timezone || "Asia/Kolkata"}
           />
 
           <InfoItem

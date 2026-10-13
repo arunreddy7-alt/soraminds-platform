@@ -1,6 +1,15 @@
 
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseTimestamp } from "@/lib/timezone";
+import {
+  calculateGoogleDrivingDistance,
+  getLegacyDeliveryPricing,
+  isDeliverySchemaMissingError,
+  selectDeliveryTier,
+  validateDeliveryTiers,
+  type DeliveryPricingTier,
+} from "@/lib/delivery-pricing";
 
 type RequestItem = {
   productId: number;
@@ -25,6 +34,8 @@ type OrderRequest = {
     pincode: string;
     address: string;
     deliveryFee?: number;
+    latitude: number;
+    longitude: number;
   };
 };
 
@@ -65,6 +76,22 @@ export async function POST(request: Request) {
       if (!pincode || !/^\d{6}$/.test(pincode)) {
         return NextResponse.json(
           { error: "Enter a valid 6-digit delivery pincode." },
+          { status: 400 }
+        );
+      }
+
+      if (
+        typeof body.delivery?.latitude !== "number" ||
+        typeof body.delivery.longitude !== "number" ||
+        !Number.isFinite(body.delivery.latitude) ||
+        !Number.isFinite(body.delivery.longitude) ||
+        body.delivery.latitude < -90 ||
+        body.delivery.latitude > 90 ||
+        body.delivery.longitude < -180 ||
+        body.delivery.longitude > 180
+      ) {
+        return NextResponse.json(
+          { error: "Select a valid delivery location on the map." },
           { status: 400 }
         );
       }
@@ -109,21 +136,43 @@ export async function POST(request: Request) {
 
     // DELIVERY SETTINGS
     let deliveryFee = 0;
-    let deliveryZoneId: number | null = null;
+    const deliveryZoneId: number | null = null;
     let deliveryAddress = "";
     let deliveryPincode = "";
+    let verifiedDistanceKm: number | null = null;
+    let verifiedRouteDurationSeconds: number | null = null;
 
     if (body.orderType === "DELIVERY") {
-      const {
-        data: settings,
-        error: settingsError,
-      } = await supabase
+      const initialSettingsResult = await supabase
         .from("restaurant_delivery_settings")
         .select(
-          "delivery_fee, minimum_order_amount, free_delivery_minimum, is_enabled"
+          "delivery_fee, minimum_order_amount, free_delivery_minimum, is_enabled, origin_latitude, origin_longitude, max_delivery_distance_km, pricing_tiers"
         )
         .eq("restaurant_id", restaurant.id)
         .maybeSingle();
+      let settings: Record<string, unknown> | null =
+        initialSettingsResult.data as Record<string, unknown> | null;
+      let settingsError = initialSettingsResult.error;
+
+      if (settingsError && isDeliverySchemaMissingError(settingsError)) {
+        const legacyResult = await supabase
+          .from("restaurant_delivery_settings")
+          .select(
+            "delivery_fee, minimum_order_amount, free_delivery_minimum, is_enabled, origin_latitude, origin_longitude, fee_0_3_km, fee_3_5_km, fee_5_10_km"
+          )
+          .eq("restaurant_id", restaurant.id)
+          .maybeSingle();
+        settings = legacyResult.data as Record<string, unknown> | null;
+        settingsError = legacyResult.error;
+        if (settings) {
+          const legacyPricing = getLegacyDeliveryPricing(settings);
+          settings = {
+            ...settings,
+            max_delivery_distance_km: legacyPricing.maxDistanceKm,
+            pricing_tiers: legacyPricing.tiers,
+          };
+        }
+      }
 
       if (settingsError) throw settingsError;
 
@@ -136,53 +185,58 @@ export async function POST(request: Request) {
 
       deliveryAddress = body.delivery!.address.trim();
       deliveryPincode = body.delivery!.pincode.trim();
+      const originLatitude = Number(settings.origin_latitude);
+      const originLongitude = Number(settings.origin_longitude);
 
-      const {
-        data: zones,
-        error: zonesError,
-      } = await supabase
-        .from("restaurant_delivery_zones")
-        .select("id, pincodes, delivery_fee")
-        .eq("restaurant_id", restaurant.id)
-        .eq("is_active", true);
+      if (
+        !Number.isFinite(originLatitude) ||
+        !Number.isFinite(originLongitude)
+      ) {
+        return NextResponse.json(
+          { error: "This restaurant has not configured a delivery location." },
+          { status: 409 }
+        );
+      }
 
-      if (zonesError) throw zonesError;
+      const maxDistanceKm = Number(settings.max_delivery_distance_km);
+      const tiers = (settings.pricing_tiers ?? []) as DeliveryPricingTier[];
+      const tierError = validateDeliveryTiers(tiers, maxDistanceKm);
 
-      // If the restaurant has active zones configured,
-      // the customer's pincode must match one of them.
-      if (zones && zones.length > 0) {
-        const matchingZone = zones.find((zone) => {
-          const pincodes = zone.pincodes;
+      if (tierError) {
+        return NextResponse.json(
+          { error: "The restaurant delivery pricing is not configured correctly." },
+          { status: 409 }
+        );
+      }
 
-          return (
-            Array.isArray(pincodes) &&
-            pincodes.some(
-              (code: string) =>
-                String(code).trim() === deliveryPincode
-            )
-          );
-        });
-
-        if (!matchingZone) {
-          return NextResponse.json(
-            {
-              error: "Delivery is not available at this pincode.",
-            },
-            { status: 400 }
-          );
+      const route = await calculateGoogleDrivingDistance(
+        {
+          latitude: originLatitude,
+          longitude: originLongitude,
+        },
+        {
+          latitude: body.delivery!.latitude,
+          longitude: body.delivery!.longitude,
         }
+      );
+      const tier = selectDeliveryTier(
+        tiers,
+        route.distanceKm,
+        maxDistanceKm
+      );
 
-        deliveryZoneId = matchingZone.id;
-        deliveryFee = Number(matchingZone.delivery_fee);
-      } else {
-        // If no active zones are configured, use the
-        // restaurant's default delivery fee.
-        deliveryFee = Number(settings.delivery_fee);
+      if (!tier) {
+        return NextResponse.json(
+          {
+            error: `This address is outside the ${maxDistanceKm} km delivery radius.`,
+          },
+          { status: 422 }
+        );
       }
 
-      if (!Number.isFinite(deliveryFee) || deliveryFee < 0) {
-        throw new Error("Invalid delivery fee configuration.");
-      }
+      deliveryFee = tier.fee;
+      verifiedDistanceKm = route.distanceKm;
+      verifiedRouteDurationSeconds = route.durationSeconds;
     }
 
     // BUILD CART QUANTITIES
@@ -446,11 +500,16 @@ export async function POST(request: Request) {
 
       const now = Date.now();
 
+      const startAt = parseTimestamp(coupon?.start_at);
+      const endAt = parseTimestamp(coupon?.end_at);
+
       if (
         !coupon ||
         !coupon.is_active ||
-        now < new Date(coupon.start_at).getTime() ||
-        now > new Date(coupon.end_at).getTime() ||
+        !startAt ||
+        !endAt ||
+        now < startAt.getTime() ||
+        now > endAt.getTime() ||
         (coupon.usage_limit !== null &&
           coupon.used_count >= coupon.usage_limit) ||
         subtotal < Number(coupon.min_order_amount || 0)
@@ -481,16 +540,14 @@ export async function POST(request: Request) {
     const total = subtotal - couponDiscount + deliveryFee;
 
     // CUSTOMER
-    let {
-      data: customer,
-      error: customerError,
-    } = await supabase
+    const customerResult = await supabase
       .from("customers")
       .select("id")
       .eq("phone", body.customer.phone.trim())
       .maybeSingle();
 
-    if (customerError) throw customerError;
+    if (customerResult.error) throw customerResult.error;
+    let customer = customerResult.data;
 
     if (customer) {
       const { error } = await supabase
@@ -580,18 +637,40 @@ export async function POST(request: Request) {
 
     // CREATE DELIVERY RECORD
     if (body.orderType === "DELIVERY") {
-      const { error: deliveryError } = await supabase
+      const deliveryPayload = {
+        order_id: order.id,
+        restaurant_id: restaurant.id,
+        delivery_zone_id: deliveryZoneId,
+        recipient_name: body.customer.name.trim(),
+        recipient_phone: body.customer.phone.trim(),
+        delivery_address: deliveryAddress,
+        pincode: deliveryPincode,
+        delivery_latitude: body.delivery?.latitude ?? null,
+        delivery_longitude: body.delivery?.longitude ?? null,
+        distance_km: verifiedDistanceKm,
+        route_duration_seconds: verifiedRouteDurationSeconds,
+        delivery_status: "PENDING",
+      };
+      let { error: deliveryError } = await supabase
         .from("order_deliveries")
-        .insert({
-          order_id: order.id,
-          restaurant_id: restaurant.id,
-          delivery_zone_id: deliveryZoneId,
-          recipient_name: body.customer.name.trim(),
-          recipient_phone: body.customer.phone.trim(),
-          delivery_address: deliveryAddress,
-          pincode: deliveryPincode,
-          delivery_status: "PENDING",
-        });
+        .insert(deliveryPayload);
+
+      if (deliveryError && isDeliverySchemaMissingError(deliveryError)) {
+        const legacyDeliveryPayload = Object.fromEntries(
+          Object.entries(deliveryPayload).filter(
+            ([key]) =>
+              ![
+                "delivery_latitude",
+                "delivery_longitude",
+                "distance_km",
+                "route_duration_seconds",
+              ].includes(key)
+          )
+        );
+        ({ error: deliveryError } = await supabase
+          .from("order_deliveries")
+          .insert(legacyDeliveryPayload));
+      }
 
       if (deliveryError) throw deliveryError;
     }

@@ -2,6 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  addCalendarDays,
+  formatTimestamp,
+  getLocalDate,
+  getRestaurantTimeZone,
+  getZonedDateRange,
+} from "@/lib/timezone";
 
 type RangeType =
   | "today"
@@ -76,46 +83,28 @@ type Payment = {
   created_at: string;
 };
 
-function startOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(0, 0, 0, 0);
-  return result;
-}
-
-function endOfDay(date: Date) {
-  const result = new Date(date);
-  result.setHours(23, 59, 59, 999);
-  return result;
-}
-
 function formatCurrency(value: number) {
   return `₹${value.toLocaleString("en-IN", {
     maximumFractionDigits: 2,
   })}`;
 }
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleDateString(
-    "en-IN",
-    {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    }
-  );
+function formatDate(value: string, timeZone: string) {
+  return formatTimestamp(value, timeZone, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString(
-    "en-IN",
-    {
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }
-  );
+function formatDateTime(value: string, timeZone: string) {
+  return formatTimestamp(value, timeZone, {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 export default function ReportsClient() {
@@ -123,6 +112,8 @@ export default function ReportsClient() {
 
   const [restaurantId, setRestaurantId] =
     useState<number | null>(null);
+  const [restaurantTimeZone, setRestaurantTimeZone] =
+    useState("Asia/Kolkata");
 
   const [orders, setOrders] =
     useState<Order[]>([]);
@@ -212,53 +203,32 @@ export default function ReportsClient() {
       return userData.restaurant_id;
     };
 
-  const getDateRange = () => {
-    const now = new Date();
+  const getDateRange = (timeZone: string) => {
+    const today = getLocalDate(new Date(), timeZone);
 
     if (range === "today") {
-      return {
-        start: startOfDay(now),
-        end: endOfDay(now),
-      };
+      return getZonedDateRange(today, today, timeZone);
     }
 
     if (range === "yesterday") {
-      const date = new Date(now);
-
-      date.setDate(
-        date.getDate() - 1
-      );
-
-      return {
-        start: startOfDay(date),
-        end: endOfDay(date),
-      };
+      const date = addCalendarDays(today, -1);
+      return getZonedDateRange(date, date, timeZone);
     }
 
     if (range === "7days") {
-      const date = new Date(now);
-
-      date.setDate(
-        date.getDate() - 6
+      return getZonedDateRange(
+        addCalendarDays(today, -6),
+        today,
+        timeZone
       );
-
-      return {
-        start: startOfDay(date),
-        end: endOfDay(now),
-      };
     }
 
     if (range === "30days") {
-      const date = new Date(now);
-
-      date.setDate(
-        date.getDate() - 29
+      return getZonedDateRange(
+        addCalendarDays(today, -29),
+        today,
+        timeZone
       );
-
-      return {
-        start: startOfDay(date),
-        end: endOfDay(now),
-      };
     }
 
     if (
@@ -266,20 +236,14 @@ export default function ReportsClient() {
       customStart &&
       customEnd
     ) {
-      return {
-        start: new Date(
-          `${customStart}T00:00:00`
-        ),
-        end: new Date(
-          `${customEnd}T23:59:59`
-        ),
-      };
+      return getZonedDateRange(
+        customStart,
+        customEnd,
+        timeZone
+      );
     }
 
-    return {
-      start: startOfDay(now),
-      end: endOfDay(now),
-    };
+    return getZonedDateRange(today, today, timeZone);
   };
 
   const loadReports = async (
@@ -301,10 +265,24 @@ export default function ReportsClient() {
         currentRestaurantId
       );
 
+      const { data: restaurant, error: restaurantError } =
+        await supabase
+          .from("restaurants")
+          .select("id")
+          .eq("id", currentRestaurantId)
+          .single();
+
+      if (restaurantError) {
+        throw new Error(restaurantError.message);
+      }
+
+      const timeZone = getRestaurantTimeZone(null);
+      setRestaurantTimeZone(timeZone);
+
       const {
         start,
         end,
-      } = getDateRange();
+      } = getDateRange(timeZone);
 
       let ordersQuery = supabase
         .from("orders")
@@ -334,11 +312,11 @@ export default function ReportsClient() {
         .eq("status", "COMPLETED")
         .gte(
           "created_at",
-          start.toISOString()
+          start
         )
         .lte(
           "created_at",
-          end.toISOString()
+          end
         )
         .order("created_at", {
           ascending: false,
@@ -1179,7 +1157,8 @@ export default function ReportsClient() {
                     order.id
                   ),
                   formatDateTime(
-                    order.created_at
+                    order.created_at,
+                    restaurantTimeZone
                   ),
                   order.order_type,
                   customer?.full_name ||
@@ -2084,7 +2063,8 @@ export default function ReportsClient() {
                             }}
                           >
                             {formatDateTime(
-                              order.created_at
+                              order.created_at,
+                              restaurantTimeZone
                             )}
                           </td>
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { parseTimestamp } from "@/lib/timezone";
 
 export async function POST(request: Request) {
   try {
@@ -38,11 +39,16 @@ export async function POST(request: Request) {
     if (couponError) throw couponError;
 
     const now = Date.now();
+    const startAt = parseTimestamp(coupon?.start_at);
+    const endAt = parseTimestamp(coupon?.end_at);
+
     if (
       !coupon ||
       !coupon.is_active ||
-      now < new Date(coupon.start_at).getTime() ||
-      now > new Date(coupon.end_at).getTime() ||
+      !startAt ||
+      !endAt ||
+      now < startAt.getTime() ||
+      now > endAt.getTime() ||
       (coupon.usage_limit !== null && coupon.used_count >= coupon.usage_limit) ||
       subtotal < Number(coupon.min_order_amount || 0)
     ) {

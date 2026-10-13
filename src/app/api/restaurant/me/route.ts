@@ -103,15 +103,58 @@ if (!staff.restaurant_id) {
   );
 }
 
-    const { data: restaurant, error: restaurantError } =
-  await admin
-    .from("restaurants")
-    .select("id, is_active, features")
-    .eq("id", staff.restaurant_id)
-    .maybeSingle();
+    let restaurant: {
+      id: number;
+      is_active: boolean;
+      features: unknown;
+      timezone?: string | null;
+    } | null = null;
 
-    if (restaurantError) {
-      console.error("Restaurant lookup failed:", restaurantError);
+    const restaurantWithTimezone = await admin
+      .from("restaurants")
+      .select("id, is_active, features, timezone")
+      .eq("id", staff.restaurant_id)
+      .maybeSingle();
+
+    if (
+      restaurantWithTimezone.error &&
+      (restaurantWithTimezone.error.code === "42703" ||
+        restaurantWithTimezone.error.message
+          .toLowerCase()
+          .includes("timezone"))
+    ) {
+      console.warn(
+        "[restaurant/me] restaurants.timezone is unavailable; using Asia/Kolkata until the migration is applied."
+      );
+
+      const legacyRestaurant = await admin
+        .from("restaurants")
+        .select("id, is_active, features")
+        .eq("id", staff.restaurant_id)
+        .maybeSingle();
+
+      if (legacyRestaurant.error) {
+        console.error(
+          "Restaurant lookup failed:",
+          legacyRestaurant.error
+        );
+
+        return NextResponse.json(
+          { error: "Unable to verify restaurant" },
+          { status: 500 }
+        );
+      }
+
+      restaurant = legacyRestaurant.data;
+    } else {
+      restaurant = restaurantWithTimezone.data;
+    }
+
+    if (restaurantWithTimezone.error && !restaurant) {
+      console.error(
+        "Restaurant lookup failed:",
+        restaurantWithTimezone.error
+      );
 
       return NextResponse.json(
         { error: "Unable to verify restaurant" },
@@ -200,6 +243,7 @@ if (!role) {
       id: restaurant.id,
       is_active: restaurant.is_active,
       features: normalizeFeatures(restaurant.features),
+      timezone: restaurant.timezone ?? "Asia/Kolkata",
     },
     role,
     permissions,

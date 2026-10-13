@@ -2,12 +2,20 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
+import {
+  addCalendarDays,
+  formatTimestamp,
+  getLocalDate,
+  getRestaurantTimeZone,
+  getZonedDateRange,
+} from "@/lib/timezone";
 
 type Restaurant = {
   id: number;
   name: string;
   is_open: boolean;
   accept_orders: boolean;
+  timezone: string | null;
 };
 
 type DashboardOrder = {
@@ -57,22 +65,9 @@ const STATUS_ORDER = [
   "CANCELLED",
 ];
 
-function getTodayRange() {
-  const now = new Date();
-
-  const indiaDate = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-  }).format(now);
-
-  const start = new Date(`${indiaDate}T00:00:00+05:30`);
-  const end = new Date(start);
-
-  end.setDate(end.getDate() + 1);
-
-  return {
-    start: start.toISOString(),
-    end: end.toISOString(),
-  };
+function getTodayRange(timeZone: string) {
+  const date = getLocalDate(new Date(), timeZone);
+  return getZonedDateRange(date, date, timeZone);
 }
 
 function formatCurrency(value: number) {
@@ -95,29 +90,27 @@ function formatOrderType(type: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function formatTime(date: string) {
-  return new Intl.DateTimeFormat("en-IN", {
+function formatTime(date: string, timeZone: string) {
+  return formatTimestamp(date, timeZone, {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
-    timeZone: "Asia/Kolkata",
-  }).format(new Date(date));
+  });
 }
 
-function formatDateLabel(date: string) {
-  return new Intl.DateTimeFormat("en-IN", {
+function formatDateLabel(date: string, timeZone: string) {
+  return formatTimestamp(`${date}T00:00:00Z`, timeZone, {
     day: "numeric",
     month: "short",
-    timeZone: "Asia/Kolkata",
-  }).format(new Date(`${date}T00:00:00+05:30`));
+  });
 }
 
-function getGreeting() {
+function getGreeting(timeZone: string) {
   const hour = Number(
     new Intl.DateTimeFormat("en-IN", {
       hour: "numeric",
       hour12: false,
-      timeZone: "Asia/Kolkata",
+      timeZone: getRestaurantTimeZone(timeZone),
     }).format(new Date())
   );
 
@@ -153,7 +146,7 @@ export default function RestaurantDashboardClient() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-  setGreeting(getGreeting());
+  setGreeting(getGreeting("Asia/Kolkata"));
 }, []);
 
   useEffect(() => {
@@ -202,9 +195,33 @@ export default function RestaurantDashboardClient() {
           return;
         }
 
-        setRestaurant(restaurantData);
+        let restaurantTimeZone: string | null = null;
+        const { data: timezoneData, error: timezoneError } =
+          await supabase
+            .from("restaurants")
+            .select("timezone")
+            .eq("id", restaurantId)
+            .single();
 
-        const { start, end } = getTodayRange();
+        if (
+          !timezoneError ||
+          !timezoneError.message.toLowerCase().includes("timezone")
+        ) {
+          if (timezoneError) {
+            throw timezoneError;
+          }
+
+          restaurantTimeZone = timezoneData?.timezone ?? null;
+        }
+
+        setRestaurant({
+          ...restaurantData,
+          timezone: restaurantTimeZone,
+        });
+
+        const timeZone = getRestaurantTimeZone(restaurantTimeZone);
+        setGreeting(getGreeting(timeZone));
+        const { start, end } = getTodayRange(timeZone);
 
         /*
          * TODAY'S ORDERS
@@ -390,50 +407,34 @@ export default function RestaurantDashboardClient() {
          *
          * Last 7 days including today.
          */
-        const trendStart = new Date();
-        trendStart.setDate(trendStart.getDate() - 6);
-
-        const trendStartDate = new Intl.DateTimeFormat(
-          "en-CA",
-          {
-            timeZone: "Asia/Kolkata",
-          }
-        ).format(trendStart);
-
-        const trendStartIso = new Date(
-          `${trendStartDate}T00:00:00+05:30`
-        ).toISOString();
+        const today = getLocalDate(new Date(), timeZone);
+        const trendStartDate = addCalendarDays(today, -6);
+        const trendRange = getZonedDateRange(
+          trendStartDate,
+          today,
+          timeZone
+        );
 
         const { data: trendOrders } = await supabase
           .from("orders")
           .select("total, created_at")
           .eq("restaurant_id", restaurantId)
-          .gte("created_at", trendStartIso)
-          .lt("created_at", end);
+          .gte("created_at", trendRange.start)
+          .lt("created_at", trendRange.end);
 
         const revenueMap: Record<string, number> = {};
 
         for (let i = 0; i < 7; i++) {
-          const date = new Date(trendStart);
-          date.setDate(date.getDate() + i);
-
-          const dateString = new Intl.DateTimeFormat(
-            "en-CA",
-            {
-              timeZone: "Asia/Kolkata",
-            }
-          ).format(date);
+          const dateString = addCalendarDays(trendStartDate, i);
 
           revenueMap[dateString] = 0;
         }
 
         (trendOrders || []).forEach((order) => {
-          const dateString = new Intl.DateTimeFormat(
-            "en-CA",
-            {
-              timeZone: "Asia/Kolkata",
-            }
-          ).format(new Date(order.created_at));
+          const dateString = getLocalDate(
+            order.created_at,
+            timeZone
+          );
 
           if (revenueMap[dateString] !== undefined) {
             revenueMap[dateString] += Number(
@@ -777,7 +778,10 @@ export default function RestaurantDashboardClient() {
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {formatDateLabel(item.date)}
+                    {formatDateLabel(
+                      item.date,
+                      getRestaurantTimeZone(restaurant?.timezone)
+                    )}
                   </span>
                 </div>
               );
@@ -1088,7 +1092,8 @@ export default function RestaurantDashboardClient() {
                       }}
                     >
                       {formatTime(
-                        order.created_at
+                        order.created_at,
+                        getRestaurantTimeZone(restaurant?.timezone)
                       )}
                     </td>
                   </tr>

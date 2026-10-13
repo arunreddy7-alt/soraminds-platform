@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  getRestaurantTimeZone,
+  isValidTimeZone,
+} from "@/lib/timezone";
 
 const privateHeaders = {
   "Cache-Control": "private, no-store",
@@ -15,6 +19,7 @@ type CreateRestaurantRequest = {
   accent_color?: string;
   is_open?: boolean;
   accept_orders?: boolean;
+  timezone?: string;
   owner_full_name: string;
   owner_email: string;
   owner_password: string;
@@ -137,6 +142,14 @@ export async function POST(request: Request) {
       );
     }
 
+    if (
+      body.timezone !== undefined &&
+      (typeof body.timezone !== "string" ||
+        !isValidTimeZone(body.timezone.trim()))
+    ) {
+      return jsonError("Timezone must be a valid IANA timezone.", 400);
+    }
+
     const name = body.name!.trim();
     const ownerName = body.owner_full_name!.trim();
     const ownerEmail = body.owner_email!.trim().toLowerCase();
@@ -186,6 +199,7 @@ export async function POST(request: Request) {
     const cuisine = body.cuisine?.trim() || null;
     const address = body.address?.trim() || null;
     const accentColor = body.accent_color?.trim() || "#E53935";
+    const timezone = getRestaurantTimeZone(body.timezone?.trim());
 
     if (phone && phone.length > 30) {
       return jsonError("Phone cannot exceed 30 characters.", 400);
@@ -257,6 +271,7 @@ export async function POST(request: Request) {
         accent_color: accentColor,
         is_open: body.is_open ?? true,
         accept_orders: body.accept_orders ?? true,
+        timezone,
         is_active: true,
         features: {
           delivery: false,
@@ -266,7 +281,7 @@ export async function POST(request: Request) {
         },
       })
       .select(
-        "id, name, slug, phone, cuisine, address, accent_color, is_open, accept_orders, is_active, features, created_at"
+        "id, name, slug, phone, cuisine, address, accent_color, is_open, accept_orders, is_active, features, timezone, created_at"
       )
       .single();
 

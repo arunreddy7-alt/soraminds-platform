@@ -24,7 +24,8 @@ type UpdateItemRequest = {
 type DeleteItemRequest = {
   restaurantSlug: string;
   tableSessionId: number;
-  itemId: number;
+  itemId?: number;
+  clearAll?: boolean;
 };
 
 /* --------------------------------
@@ -945,90 +946,94 @@ export async function PATCH(
    DELETE ITEM
 -------------------------------- */
 
-export async function DELETE(
-  request: Request
-) {
-  try {
-    const body =
-      (await request.json()) as DeleteItemRequest;
 
-    const {
-      restaurantSlug,
-      tableSessionId,
-      itemId,
-    } = body;
+export async function DELETE(request: Request) {
+  try {
+    const body = (await request.json()) as DeleteItemRequest;
+
+    const { restaurantSlug, tableSessionId, itemId, clearAll } = body;
 
     if (
-      !restaurantSlug ||
-      !tableSessionId ||
-      !itemId
+      typeof restaurantSlug !== "string" ||
+      !restaurantSlug.trim() ||
+      !Number.isSafeInteger(tableSessionId) ||
+      tableSessionId <= 0 ||
+      (clearAll !== true &&
+        (!Number.isSafeInteger(itemId) || (itemId ?? 0) <= 0))
     ) {
       return NextResponse.json(
-        {
-          error:
-            "Invalid delete data.",
-        },
+        { error: "Invalid delete data." },
         { status: 400 }
       );
     }
 
-    const supabase =
-      createAdminClient();
+    const supabase = createAdminClient();
 
-    const restaurant =
-      await getRestaurant(
-        supabase,
-        restaurantSlug
-      );
+    const restaurant = await getRestaurant(supabase, restaurantSlug);
 
     if (!restaurant) {
       return NextResponse.json(
-        {
-          error:
-            "Restaurant not found.",
-        },
+        { error: "Restaurant not found." },
         { status: 404 }
       );
     }
 
-    const session =
-      await getActiveSession(
-        supabase,
-        restaurant.id,
-        tableSessionId
-      );
+    const session = await getActiveSession(
+      supabase,
+      restaurant.id,
+      tableSessionId
+    );
 
     if (!session) {
       return NextResponse.json(
-        {
-          error:
-            "Active table session not found.",
-        },
+        { error: "Active table session not found." },
         { status: 404 }
       );
     }
 
-    const {
-      error,
-    } = await supabase
+    // Clear every item belonging to this active shared-table session.
+    if (clearAll === true) {
+      const { error } = await supabase
+        .from("table_session_items")
+        .delete()
+        .eq("table_session_id", session.id);
+
+      if (error) {
+        console.error("CLEAR SHARED CART ERROR:", error);
+
+        return NextResponse.json(
+          { error: "Unable to clear shared cart." },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        action: "cleared",
+      });
+    }
+
+    // Otherwise, delete only the requested item from this session.
+    const { data: deletedItems, error } = await supabase
       .from("table_session_items")
       .delete()
-      .eq(
-        "id",
-        itemId
-      )
-      .eq(
-        "table_session_id",
-        session.id
-      );
+      .eq("id", itemId!)
+      .eq("table_session_id", session.id)
+      .select("id");
 
     if (error) {
+      console.error("DELETE TABLE CART ITEM ERROR:", error);
+
       return NextResponse.json(
-        {
-          error:
-            "Unable to remove item.",
-        },
+        { error: "Unable to remove item." },
         { status: 500 }
+      );
+    }
+
+    if (!deletedItems?.length) {
+      return NextResponse.json(
+        { error: "Cart item not found." },
+        { status: 404 }
       );
     }
 
@@ -1037,16 +1042,10 @@ export async function DELETE(
       action: "deleted",
     });
   } catch (error) {
-    console.error(
-      "DELETE TABLE CART ERROR:",
-      error
-    );
+    console.error("DELETE TABLE CART ERROR:", error);
 
     return NextResponse.json(
-      {
-        error:
-          "Internal server error.",
-      },
+      { error: "Internal server error." },
       { status: 500 }
     );
   }

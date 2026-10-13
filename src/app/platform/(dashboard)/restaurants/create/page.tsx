@@ -15,6 +15,7 @@ export default function CreateRestaurantPage() {
     accent_color: "#E53935",
     is_open: true,
     accept_orders: true,
+    timezone: "Asia/Kolkata",
     owner_full_name: "",
     owner_email: "",
     owner_password: "",
@@ -292,6 +293,42 @@ export default function CreateRestaurantPage() {
                 }}
               >
                 Used as the unique restaurant identifier.
+              </p>
+            </div>
+
+            {/* Phone */}
+
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  marginBottom: "8px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  color: "#343840",
+                }}
+              >
+                IANA Timezone
+              </label>
+              <input
+                value={form.timezone}
+                onChange={(event) =>
+                  updateField("timezone", event.target.value)
+                }
+                placeholder="Asia/Kolkata"
+                required
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "12px 14px",
+                  border: "1px solid #dfe2e7",
+                  borderRadius: "8px",
+                  fontSize: "14px",
+                  outline: "none",
+                }}
+              />
+              <p style={{ margin: "6px 0 0", fontSize: "12px", color: "#8a9099" }}>
+                Used for local order times and daily reports.
               </p>
             </div>
 

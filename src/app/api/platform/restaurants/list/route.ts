@@ -41,10 +41,31 @@ export async function GET() {
       );
     }
 
-    const { data: restaurants, error } = await admin
+    let { data: restaurants, error } = await admin
       .from("restaurants")
-      .select("id, name, slug, is_active, features, created_at")
+      .select("id, name, slug, is_active, features, timezone, created_at")
       .order("created_at", { ascending: false });
+
+    if (
+      error &&
+      (error.code === "42703" ||
+        error.message.toLowerCase().includes("timezone"))
+    ) {
+      console.warn(
+        "[platform/restaurants/list] restaurants.timezone is unavailable; using the legacy schema."
+      );
+
+      const legacyResult = await admin
+        .from("restaurants")
+        .select("id, name, slug, is_active, features, created_at")
+        .order("created_at", { ascending: false });
+
+      restaurants = (legacyResult.data ?? []).map((restaurant) => ({
+        ...restaurant,
+        timezone: "Asia/Kolkata",
+      }));
+      error = legacyResult.error;
+    }
 
     if (error) {
       console.error("Platform restaurant list failed:", error);

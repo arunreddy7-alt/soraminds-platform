@@ -2,6 +2,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  isDeliverySchemaMissingError,
+  validateDeliveryTiers,
+  type DeliveryPricingTier,
+} from "@/lib/delivery-pricing";
 
 const privateHeaders = {
   "Cache-Control": "private, no-store",
@@ -15,6 +20,9 @@ const allowedFields = [
   "estimated_delivery_minutes",
   "origin_latitude",
   "origin_longitude",
+  "delivery_address",
+  "max_delivery_distance_km",
+  "pricing_tiers",
   "fee_0_3_km",
   "fee_3_5_km",
   "fee_5_10_km",
@@ -117,6 +125,13 @@ export async function GET() {
       estimated_delivery_minutes: 45,
       origin_latitude: null,
       origin_longitude: null,
+      delivery_address: "",
+      max_delivery_distance_km: 10,
+      pricing_tiers: [
+        { min_km: 0, max_km: 3, fee: 60 },
+        { min_km: 3, max_km: 7, fee: 100 },
+        { min_km: 7, max_km: null, fee: 150 },
+      ],
       fee_0_3_km: 30,
       fee_3_5_km: 50,
       fee_5_10_km: 80,
@@ -196,6 +211,7 @@ export async function PATCH(request: Request) {
       "fee_0_3_km",
       "fee_3_5_km",
       "fee_5_10_km",
+      "max_delivery_distance_km",
     ];
 
     for (const field of nonNegativeNumberFields) {
@@ -210,6 +226,72 @@ export async function PATCH(request: Request) {
       ) {
         return NextResponse.json(
           { error: `Invalid ${field}` },
+          { status: 400, headers: privateHeaders }
+        );
+      }
+    }
+
+    if (
+      "delivery_address" in input &&
+      typeof input.delivery_address !== "string"
+    ) {
+      return NextResponse.json(
+        { error: "Invalid delivery_address" },
+        { status: 400, headers: privateHeaders }
+      );
+    }
+
+    if ("pricing_tiers" in input) {
+      if (
+        !Array.isArray(input.pricing_tiers) ||
+        input.pricing_tiers.some((tier) => {
+          if (!tier || typeof tier !== "object") return true;
+          const value = tier as Record<string, unknown>;
+          return (
+            typeof value.min_km !== "number" ||
+            (value.max_km !== null && typeof value.max_km !== "number") ||
+            typeof value.fee !== "number"
+          );
+        })
+      ) {
+        return NextResponse.json(
+          { error: "Invalid pricing tiers" },
+          { status: 400, headers: privateHeaders }
+        );
+      }
+
+      const tiers = input.pricing_tiers as DeliveryPricingTier[];
+      const maxDistance = Number(input.max_delivery_distance_km ?? 10);
+      const tierError = validateDeliveryTiers(tiers, maxDistance);
+
+      if (tierError) {
+        return NextResponse.json(
+          { error: tierError },
+          { status: 400, headers: privateHeaders }
+        );
+      }
+    }
+
+    if (
+      "max_delivery_distance_km" in input &&
+      !("pricing_tiers" in input)
+    ) {
+      const existingSettings = await access.admin
+        .from("restaurant_delivery_settings")
+        .select("pricing_tiers")
+        .eq("restaurant_id", access.restaurant.id)
+        .maybeSingle();
+
+      if (existingSettings.error) throw existingSettings.error;
+      const tierError = validateDeliveryTiers(
+        (existingSettings.data?.pricing_tiers ??
+          []) as DeliveryPricingTier[],
+        Number(input.max_delivery_distance_km)
+      );
+
+      if (tierError) {
+        return NextResponse.json(
+          { error: tierError },
           { status: 400, headers: privateHeaders }
         );
       }
@@ -306,6 +388,16 @@ export async function PATCH(request: Request) {
 
     if (error) {
       console.error("Delivery settings save failed:", error);
+
+      if (isDeliverySchemaMissingError(error)) {
+        return NextResponse.json(
+          {
+            error:
+              "Delivery pricing schema is not installed yet. Apply the dynamic delivery pricing migration, then retry.",
+          },
+          { status: 409, headers: privateHeaders }
+        );
+      }
 
       return NextResponse.json(
         {

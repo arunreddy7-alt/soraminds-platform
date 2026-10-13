@@ -2,6 +2,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import {
+  formatTimestamp,
+  getRestaurantTimeZone,
+} from "@/lib/timezone";
 
 type DashboardStats = {
   totalRestaurants: number;
@@ -15,6 +19,7 @@ type Restaurant = {
   name: string;
   slug: string;
   is_active: boolean;
+  timezone: string | null;
   created_at: string;
 };
 
@@ -431,13 +436,17 @@ export default function PlatformDashboard() {
                       }}
                     >
                       {restaurant.created_at
-                        ? new Date(
-                            restaurant.created_at
-                          ).toLocaleDateString("en-IN", {
-                            day: "2-digit",
-                            month: "short",
-                            year: "numeric",
-                          })
+                        ? formatTimestamp(
+                            restaurant.created_at,
+                            getRestaurantTimeZone(
+                              restaurant.timezone
+                            ),
+                            {
+                              day: "2-digit",
+                              month: "short",
+                              year: "numeric",
+                            }
+                          )
                         : "—"}
                     </td>
                   </tr>

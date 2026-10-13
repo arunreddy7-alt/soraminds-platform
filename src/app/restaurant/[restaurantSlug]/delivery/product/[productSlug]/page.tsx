@@ -13,14 +13,23 @@ type DeliveryProductPageProps = {
 export default async function DeliveryProductPage({
   params,
 }: DeliveryProductPageProps) {
+  return (
+    <Suspense fallback={<div>Loading delivery product...</div>}>
+      <DeliveryProductPageContent params={params} />
+    </Suspense>
+  );
+}
+
+async function DeliveryProductPageContent({
+  params,
+}: DeliveryProductPageProps) {
   const { restaurantSlug, productSlug } = await params;
 
   return (
-    <Suspense fallback={<div>Loading delivery product...</div>}>
-      <ProductDetailsClient
-        restaurantSlug={restaurantSlug}
-        productSlug={productSlug}
-      />
-    </Suspense>
+    <ProductDetailsClient
+      restaurantSlug={restaurantSlug}
+      productSlug={productSlug}
+      isDeliveryPage
+    />
   );
 }

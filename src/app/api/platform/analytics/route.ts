@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  getLocalDate,
+  getRestaurantTimeZone,
+  parseTimestamp,
+} from "@/lib/timezone";
 
 const privateHeaders = {
   "Cache-Control": "private, no-store",
@@ -61,7 +66,7 @@ export async function GET() {
     const [restaurantsResult, ordersResult] = await Promise.all([
       admin
         .from("restaurants")
-        .select("id, name, is_active"),
+        .select("id, name, is_active, timezone"),
 
       admin
         .from("orders")
@@ -71,9 +76,30 @@ export async function GET() {
         .order("created_at", { ascending: true }),
     ]);
 
-    if (restaurantsResult.error || ordersResult.error) {
+    let restaurantsData = restaurantsResult.data;
+    let restaurantsError = restaurantsResult.error;
+
+    if (
+      restaurantsError &&
+      (restaurantsError.code === "42703" ||
+        restaurantsError.message.toLowerCase().includes("timezone"))
+    ) {
+      const legacyRestaurants = await admin
+        .from("restaurants")
+        .select("id, name, is_active");
+
+      restaurantsData = (legacyRestaurants.data ?? []).map(
+        (restaurant) => ({
+          ...restaurant,
+          timezone: "Asia/Kolkata",
+        })
+      );
+      restaurantsError = legacyRestaurants.error;
+    }
+
+    if (restaurantsError || ordersResult.error) {
       console.error("Platform analytics query failed:", {
-        restaurantsError: restaurantsResult.error,
+        restaurantsError,
         ordersError: ordersResult.error,
       });
 
@@ -83,7 +109,13 @@ export async function GET() {
       );
     }
 
-    const restaurants = restaurantsResult.data ?? [];
+    const restaurants = restaurantsData ?? [];
+    const restaurantTimezones = new Map(
+      restaurants.map((restaurant) => [
+        restaurant.id,
+        getRestaurantTimeZone(restaurant.timezone),
+      ])
+    );
     const orders = ordersResult.data ?? [];
 
     // Prepare all 30 calendar days, including days with zero orders.
@@ -98,9 +130,16 @@ export async function GET() {
     const restaurantOrderCounts = new Map<number, number>();
 
     for (const order of orders) {
-      const day = new Date(order.created_at)
-        .toISOString()
-        .slice(0, 10);
+      const timestamp = parseTimestamp(order.created_at);
+      if (!timestamp) {
+        continue;
+      }
+
+      const day = getLocalDate(
+        timestamp,
+        restaurantTimezones.get(order.restaurant_id) ??
+          "Asia/Kolkata"
+      );
 
       if (dailyMap.has(day)) {
         dailyMap.set(day, (dailyMap.get(day) ?? 0) + 1);
