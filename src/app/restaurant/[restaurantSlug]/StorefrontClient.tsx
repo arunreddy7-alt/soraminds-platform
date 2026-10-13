@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
+  useRouter,
+  useSearchParams,
+  usePathname,
+} from "next/navigation";import {
   getCartCount,
 } from "@/lib/customer/cart";
+import { getDeliveryCartCount } from "@/lib/customer/delivery-cart";
 
 type Restaurant = {
   id: number;
@@ -83,15 +87,19 @@ type TableInfo = {
   seats: number;
 };
 
-export default function StorefrontClient() {
-  const params = useParams();
+export default function StorefrontClient({
+  restaurantSlug,
+}: {
+  restaurantSlug: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const pathname = usePathname();
 
-  const restaurantSlug =
-    typeof params.restaurantSlug === "string"
-      ? params.restaurantSlug
-      : "";
+  const isDeliveryPage = pathname.endsWith("/delivery");
+
+  // Keep the rest of your existing component code.
+
 
   /*
    * CUSTOMER ORDER MODE
@@ -105,10 +113,11 @@ export default function StorefrontClient() {
    * Table QR:
    * /restaurant/test-restaurant?orderType=DINE_IN&tableId=2
    */
-  const orderType =
-    searchParams.get("orderType") === "DINE_IN"
-      ? "DINE_IN"
-      : "TAKEAWAY";
+ const orderType = isDeliveryPage
+  ? "DELIVERY"
+  : searchParams.get("orderType") === "DINE_IN"
+    ? "DINE_IN"
+    : "TAKEAWAY";
 
   const tableIdParam = searchParams.get("tableId");
 
@@ -163,8 +172,10 @@ export default function StorefrontClient() {
    * LOAD RESTAURANT
    */
   useEffect(() => {
+  if (restaurantSlug) {
     loadStorefront();
-  }, [restaurantSlug]);
+  }
+}, [restaurantSlug, isDeliveryPage]);
 
   const loadStorefront = async () => {
     try {
@@ -172,7 +183,9 @@ export default function StorefrontClient() {
       setError("");
 
       const response = await fetch(
-        `/api/customer/storefront/${restaurantSlug}`,
+        isDeliveryPage
+  ? `/api/customer/storefront/${restaurantSlug}/delivery`
+  : `/api/customer/storefront/${restaurantSlug}`,
         {
           cache: "no-store",
         }
@@ -387,26 +400,26 @@ export default function StorefrontClient() {
     useState(0);
 
   useEffect(() => {
-    const updateCartCount = () => {
-      setCartCount(
-        getCartCount(restaurantSlug)
-      );
-    };
-
-    updateCartCount();
-
-    window.addEventListener(
-      "soraminds-cart-updated",
-      updateCartCount
+  const updateCartCount = () => {
+    setCartCount(
+      isDeliveryPage
+        ? getDeliveryCartCount(restaurantSlug)
+        : getCartCount(restaurantSlug)
     );
+  };
 
-    return () => {
-      window.removeEventListener(
-        "soraminds-cart-updated",
-        updateCartCount
-      );
-    };
-  }, [restaurantSlug]);
+  updateCartCount();
+
+  const eventName = isDeliveryPage
+    ? "soraminds-delivery-cart-updated"
+    : "soraminds-cart-updated";
+
+  window.addEventListener(eventName, updateCartCount);
+
+  return () => {
+    window.removeEventListener(eventName, updateCartCount);
+  };
+}, [restaurantSlug, isDeliveryPage]);
 
   const filteredProducts = products.filter(
     (product) => {
@@ -561,7 +574,9 @@ export default function StorefrontClient() {
           <button
             onClick={() =>
   router.push(
-    `/restaurant/${restaurantSlug}/cart${getCustomerContextQuery()}`
+    isDeliveryPage
+      ? `/restaurant/${restaurantSlug}/delivery/cart`
+      : `/restaurant/${restaurantSlug}/cart${getCustomerContextQuery()}`
   )
 }
             style={{
@@ -632,14 +647,16 @@ export default function StorefrontClient() {
                 }}
               >
                 {orderType === "DINE_IN"
-                  ? `🍽️ DINE-IN${
-                      tableInfo
-                        ? ` • TABLE ${tableInfo.tableNumber}`
-                        : tableId
-                        ? ` • TABLE ${tableId}`
-                        : ""
-                    }`
-                  : "🥡 TAKEAWAY"}
+  ? `🍽️ DINE-IN${
+      tableInfo
+        ? ` • TABLE ${tableInfo.tableNumber}`
+        : tableId
+          ? ` • TABLE ${tableId}`
+          : ""
+    }`
+  : orderType === "DELIVERY"
+    ? "🛵 DELIVERY"
+    : "🥡 TAKEAWAY"}
               </div>
             </div>
 
@@ -1108,10 +1125,11 @@ export default function StorefrontClient() {
                   <div
                     key={product.id}
                     onClick={() =>
-                      router.push(
-                          `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
-
-                      )
+                     router.push(
+  isDeliveryPage
+    ? `/restaurant/${restaurantSlug}/delivery/product/${product.slug}`
+    : `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
+)
                     }
                     style={{
                       background: "#fff",
@@ -1209,11 +1227,12 @@ export default function StorefrontClient() {
 
                         <button
                           onClick={(event) => {
-                            event.stopPropagation();
-
-                            router.push(
-  `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
-                            );
+                            event.stopPropagation();              
+router.push(
+  isDeliveryPage
+    ? `/restaurant/${restaurantSlug}/delivery/product/${product.slug}`
+    : `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
+);
                           }}
                           disabled={
                             !product.is_available ||

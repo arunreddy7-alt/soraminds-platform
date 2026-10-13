@@ -37,6 +37,7 @@ async function requirePlatformOwner() {
 
   const { data: platformUser, error } = await admin
     .from("platform_users")
+    
     .select("id, is_active")
     .eq("auth_user_id", user.id)
     .maybeSingle();

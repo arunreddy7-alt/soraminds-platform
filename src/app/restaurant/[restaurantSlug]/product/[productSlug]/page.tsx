@@ -1,24 +1,25 @@
-export const instant = false;
 
+import { Suspense } from "react";
 import ProductDetailsClient from "./ProductDetailsClient";
 
-export default async function ProductPage({
-  params,
-}: {
+type ProductPageProps = {
   params: Promise<{
     restaurantSlug: string;
     productSlug: string;
   }>;
-}) {
-  const {
-    restaurantSlug,
-    productSlug,
-  } = await params;
+};
+
+export default async function ProductPage({
+  params,
+}: ProductPageProps) {
+  const { restaurantSlug, productSlug } = await params;
 
   return (
-    <ProductDetailsClient
-      restaurantSlug={restaurantSlug}
-      productSlug={productSlug}
-    />
+    <Suspense fallback={<div>Loading product...</div>}>
+      <ProductDetailsClient
+        restaurantSlug={restaurantSlug}
+        productSlug={productSlug}
+      />
+    </Suspense>
   );
 }

@@ -6,11 +6,13 @@ import {
 } from "react";
 
 import {
+  usePathname,
   useRouter,
   useSearchParams,
 } from "next/navigation";
 
 import { addToCart } from "@/lib/cart";
+import { addToDeliveryCart } from "@/lib/customer/delivery-cart";
 
 type Restaurant = {
   id: number;
@@ -67,13 +69,17 @@ export default function ProductDetailsClient({
   restaurantSlug: string;
   productSlug: string;
 }) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+ const router = useRouter();
+const searchParams = useSearchParams();
+const pathname = usePathname();
 
-  const orderType =
-    searchParams.get("orderType") === "DINE_IN"
-      ? "DINE_IN"
-      : "TAKEAWAY";
+const isDeliveryPage = pathname.includes("/delivery/product/");
+
+const orderType = isDeliveryPage
+  ? "DELIVERY"
+  : searchParams.get("orderType") === "DINE_IN"
+    ? "DINE_IN"
+    : "TAKEAWAY";
 
   const tableIdParam = searchParams.get("tableId");
 
@@ -538,6 +544,35 @@ export default function ProductDetailsClient({
         return;
       }
 
+
+
+      if (orderType === "DELIVERY") {
+  const item = {
+    key: selectedVariant
+      ? `${product.id}-${selectedVariant.id}`
+      : `${product.id}-base`,
+    productId: product.id,
+    productSlug: product.slug,
+    name: product.name,
+    imageUrl:
+      selectedVariant?.image_url ||
+      product.image_url ||
+      null,
+    price: selectedVariant?.price ?? product.price,
+    quantity,
+    variantId: selectedVariant?.id ?? null,
+    variantName: selectedVariant?.name ?? null,
+  };
+
+  addToDeliveryCart(restaurantSlug, item);
+
+  router.push(
+    `/restaurant/${encodeURIComponent(restaurantSlug)}/delivery/cart`
+  );
+
+  return;
+}
+
       /*
        * TAKEAWAY
        *
@@ -722,6 +757,10 @@ export default function ProductDetailsClient({
    * Helper for preserving customer context.
    */
   const getRestaurantUrl = () => {
+
+    if (orderType === "DELIVERY") {
+  return `/restaurant/${encodeURIComponent(restaurantSlug)}/delivery`;
+}
     if (
       orderType === "DINE_IN" &&
       tableId
@@ -750,6 +789,9 @@ export default function ProductDetailsClient({
   };
 
   const getCartUrl = () => {
+    if (orderType === "DELIVERY") {
+  return `/restaurant/${encodeURIComponent(restaurantSlug)}/delivery/cart`;
+}
     if (
       orderType === "DINE_IN" &&
       tableId
@@ -1372,11 +1414,12 @@ export default function ProductDetailsClient({
               }}
             >
               {addingToCart
-                ? "Adding..."
-                : orderType ===
-                  "DINE_IN"
-                ? "Add to Shared Cart"
-                : "Add to Cart"}
+  ? "Adding..."
+  : orderType === "DINE_IN"
+    ? "Add to Shared Cart"
+    : orderType === "DELIVERY"
+      ? "Add to Delivery Cart"
+      : "Add to Cart"}
             </button>
 
             {orderType ===

@@ -7,10 +7,18 @@ type PermissionAccess = "FULL" | "VIEW" | "NONE";
 
 type Permissions = Record<string, PermissionAccess>;
 
+type RestaurantFeatures = {
+  delivery: boolean;
+  vip_lounge: boolean;
+  bar: boolean;
+  live_entertainment: boolean;
+};
+
 type NavigationItem = {
   name: string;
   path: string;
   module: string;
+  feature?: keyof RestaurantFeatures;
 };
 
 const navigation: {
@@ -75,6 +83,30 @@ const navigation: {
         path: "/restaurant/reviews",
         module: "reviews",
       },
+      {
+        name: "Delivery",
+        path: "/restaurant/delivery",
+        module: "delivery",
+        feature: "delivery",
+      },
+      {
+        name: "VIP Lounge",
+        path: "/restaurant/vip-lounge",
+        module: "vip_lounge",
+        feature: "vip_lounge",
+      },
+      {
+        name: "Bar",
+        path: "/restaurant/bar",
+        module: "bar",
+        feature: "bar",
+      },
+      {
+        name: "Live Entertainment",
+        path: "/restaurant/live-entertainment",
+        module: "live_entertainment",
+        feature: "live_entertainment",
+      },
     ],
   },
   {
@@ -112,23 +144,31 @@ const navigation: {
 type RestaurantSidebarProps = {
   permissions: Permissions;
   isOwner: boolean;
+  features: RestaurantFeatures;
 };
 
 export default function RestaurantSidebar({
   permissions,
   isOwner,
+  features,
 }: RestaurantSidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
 
-  function canView(module: string) {
+  function canView(item: NavigationItem) {
+    // Feature availability applies to owners and staff.
+    if (item.feature && features[item.feature] !== true) {
+      return false;
+    }
+
+    // Owners bypass staff permissions, not feature flags.
     if (isOwner) {
       return true;
     }
 
     return (
-      permissions[module] === "FULL" ||
-      permissions[module] === "VIEW"
+      permissions[item.module] === "FULL" ||
+      permissions[item.module] === "VIEW"
     );
   }
 
@@ -214,9 +254,7 @@ export default function RestaurantSidebar({
         }}
       >
         {navigation.map((section) => {
-          const visibleItems = section.items.filter((item) =>
-            canView(item.module)
-          );
+          const visibleItems = section.items.filter(canView);
 
           if (visibleItems.length === 0) {
             return null;
@@ -244,7 +282,9 @@ export default function RestaurantSidebar({
               </div>
 
               {visibleItems.map((item) => {
-                const active = pathname.startsWith(item.path);
+                const active =
+                  pathname === item.path ||
+                  pathname.startsWith(`${item.path}/`);
 
                 return (
                   <button

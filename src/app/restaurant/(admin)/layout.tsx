@@ -1,4 +1,3 @@
-
 "use client";
 
 import {
@@ -14,6 +13,21 @@ import RestaurantHeader from "@/components/restaurant/RestaurantHeader";
 type PermissionAccess = "FULL" | "VIEW" | "NONE";
 
 type Permissions = Record<string, PermissionAccess>;
+
+
+type RestaurantFeatures = {
+  delivery: boolean;
+  vip_lounge: boolean;
+  bar: boolean;
+  live_entertainment: boolean;
+};
+
+const DEFAULT_FEATURES: RestaurantFeatures = {
+  delivery: false,
+  vip_lounge: false,
+  bar: false,
+  live_entertainment: false,
+};
 
 const routePermissions: {
   prefix: string;
@@ -35,7 +49,40 @@ const routePermissions: {
   { prefix: "/restaurant/settings", module: "settings" },
 ];
 
+const featureRoutes: {
+  prefix: string;
+  feature: keyof RestaurantFeatures;
+}[] = [
+  { prefix: "/restaurant/delivery", feature: "delivery" },
+  { prefix: "/restaurant/vip-lounge", feature: "vip_lounge" },
+  { prefix: "/restaurant/bar", feature: "bar" },
+  {
+    prefix: "/restaurant/live-entertainment",
+    feature: "live_entertainment",
+  },
+];
+
+function normalizeFeatures(value: unknown): RestaurantFeatures {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value)
+  ) {
+    return DEFAULT_FEATURES;
+  }
+
+  const input = value as Record<string, unknown>;
+
+  return {
+    delivery: input.delivery === true,
+    vip_lounge: input.vip_lounge === true,
+    bar: input.bar === true,
+    live_entertainment: input.live_entertainment === true,
+  };
+}
+
 export default function RestaurantLayout({
+  
   children,
 }: Readonly<{
   children: React.ReactNode;
@@ -46,6 +93,8 @@ export default function RestaurantLayout({
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [permissions, setPermissions] = useState<Permissions>({});
   const [isOwner, setIsOwner] = useState(false);
+  const [features, setFeatures] =
+    useState<RestaurantFeatures>(DEFAULT_FEATURES);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,17 +108,23 @@ export default function RestaurantLayout({
         });
 
         if (!response.ok) {
-          if (response.status === 401 || response.status === 403) {
+          if (
+            response.status === 401 ||
+            response.status === 403
+          ) {
             const supabase = createClient();
             await supabase.auth.signOut();
 
             if (!cancelled) {
               router.replace("/restaurant/login");
             }
+
             return;
           }
 
-          throw new Error("Unable to verify restaurant access");
+          throw new Error(
+            "Unable to verify restaurant access"
+          );
         }
 
         const result = await response.json();
@@ -77,7 +132,11 @@ export default function RestaurantLayout({
         if (cancelled) return;
 
         const owner = result.role?.name === "OWNER";
+
         setIsOwner(owner);
+        setFeatures(
+          normalizeFeatures(result.restaurant?.features)
+        );
 
         if (owner) {
           setPermissions({});
@@ -85,8 +144,15 @@ export default function RestaurantLayout({
           const permissionMap: Permissions = {};
 
           for (const permission of result.permissions ?? []) {
-            permissionMap[permission.module] =
-              permission.access as PermissionAccess;
+            if (
+              typeof permission.module === "string" &&
+              ["FULL", "VIEW", "NONE"].includes(
+                permission.access
+              )
+            ) {
+              permissionMap[permission.module] =
+                permission.access as PermissionAccess;
+            }
           }
 
           setPermissions(permissionMap);
@@ -94,7 +160,10 @@ export default function RestaurantLayout({
 
         setCheckingAuth(false);
       } catch (error) {
-        console.error("Restaurant authentication failed:", error);
+        console.error(
+          "Restaurant authentication failed:",
+          error
+        );
 
         if (!cancelled) {
           setCheckingAuth(false);
@@ -111,7 +180,26 @@ export default function RestaurantLayout({
   }, [router]);
 
   useEffect(() => {
-    if (checkingAuth || isOwner) return;
+    if (checkingAuth) return;
+
+    // Feature availability applies to owners and staff.
+    const matchedFeatureRoute = featureRoutes.find(
+      (route) =>
+        pathname === route.prefix ||
+        pathname.startsWith(`${route.prefix}/`)
+    );
+
+    if (
+      matchedFeatureRoute &&
+      !features[matchedFeatureRoute.feature]
+    ) {
+      router.replace("/restaurant/dashboard");
+      return;
+    }
+
+    // Owners bypass staff module permissions,
+    // but not disabled feature flags.
+    if (isOwner) return;
 
     const matchedRoute = routePermissions.find(
       (route) =>
@@ -122,12 +210,20 @@ export default function RestaurantLayout({
     if (!matchedRoute) return;
 
     const access = permissions[matchedRoute.module];
-    const canView = access === "FULL" || access === "VIEW";
+    const canView =
+      access === "FULL" || access === "VIEW";
 
     if (!canView) {
       router.replace("/restaurant/dashboard");
     }
-  }, [pathname, permissions, isOwner, checkingAuth, router]);
+  }, [
+    pathname,
+    permissions,
+    features,
+    isOwner,
+    checkingAuth,
+    router,
+  ]);
 
   if (checkingAuth) {
     return (
@@ -170,6 +266,7 @@ export default function RestaurantLayout({
         <RestaurantSidebar
           permissions={permissions}
           isOwner={isOwner}
+          features={features}
         />
       </Suspense>
 

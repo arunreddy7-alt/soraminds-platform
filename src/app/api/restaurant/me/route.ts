@@ -3,6 +3,34 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+
+const SUPPORTED_FEATURES = [
+  "delivery",
+  "vip_lounge",
+  "bar",
+  "live_entertainment",
+] as const;
+
+type RestaurantFeatures = Record<
+  (typeof SUPPORTED_FEATURES)[number],
+  boolean
+>;
+
+function normalizeFeatures(value: unknown): RestaurantFeatures {
+  const input =
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+
+  return {
+    delivery: input.delivery === true,
+    vip_lounge: input.vip_lounge === true,
+    bar: input.bar === true,
+    live_entertainment: input.live_entertainment === true,
+  };
+}
 export async function GET() {
   try {
     // Verify the signed-in Supabase user.
@@ -76,11 +104,11 @@ if (!staff.restaurant_id) {
 }
 
     const { data: restaurant, error: restaurantError } =
-      await admin
-        .from("restaurants")
-        .select("id, is_active")
-        .eq("id", staff.restaurant_id)
-        .maybeSingle();
+  await admin
+    .from("restaurants")
+    .select("id, is_active, features")
+    .eq("id", staff.restaurant_id)
+    .maybeSingle();
 
     if (restaurantError) {
       console.error("Restaurant lookup failed:", restaurantError);
@@ -162,22 +190,26 @@ if (!role) {
 
     // Return only the information required by the layout.
     return NextResponse.json(
-      {
-        staff: {
-          id: staff.id,
-          restaurant_id: staff.restaurant_id,
-          role_id: staff.role_id,
-        },
-        restaurant,
-        role,
-        permissions,
-      },
-      {
-        headers: {
-          "Cache-Control": "private, no-store",
-        },
-      }
-    );
+  {
+    staff: {
+      id: staff.id,
+      restaurant_id: staff.restaurant_id,
+      role_id: staff.role_id,
+    },
+    restaurant: {
+      id: restaurant.id,
+      is_active: restaurant.is_active,
+      features: normalizeFeatures(restaurant.features),
+    },
+    role,
+    permissions,
+  },
+  {
+    headers: {
+      "Cache-Control": "private, no-store",
+    },
+  }
+);
   } catch (error) {
     console.error("Restaurant session lookup failed:", error);
 
