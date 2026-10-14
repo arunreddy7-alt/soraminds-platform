@@ -11,7 +11,6 @@ import {
 } from "next/navigation";
 
 import { addToCart } from "@/lib/cart";
-import { addToDeliveryCart } from "@/lib/customer/delivery-cart";
 
 type Restaurant = {
   id: number;
@@ -64,18 +63,15 @@ type TableSession = {
 export default function ProductDetailsClient({
   restaurantSlug,
   productSlug,
-  isDeliveryPage = false,
 }: {
   restaurantSlug: string;
   productSlug: string;
-  isDeliveryPage?: boolean;
 }) {
  const router = useRouter();
 const searchParams = useSearchParams();
 
-const orderType = isDeliveryPage
-  ? "DELIVERY"
-  : searchParams.get("orderType") === "DINE_IN"
+const orderType =
+  searchParams.get("orderType") === "DINE_IN"
     ? "DINE_IN"
     : "TAKEAWAY";
 
@@ -562,35 +558,6 @@ setTableNumber(
         return;
       }
 
-
-
-      if (orderType === "DELIVERY") {
-  const item = {
-    key: selectedVariant
-      ? `${product.id}-${selectedVariant.id}`
-      : `${product.id}-base`,
-    productId: product.id,
-    productSlug: product.slug,
-    name: product.name,
-    imageUrl:
-      selectedVariant?.image_url ||
-      product.image_url ||
-      null,
-    price: selectedVariant?.price ?? product.price,
-    quantity,
-    variantId: selectedVariant?.id ?? null,
-    variantName: selectedVariant?.name ?? null,
-  };
-
-  addToDeliveryCart(restaurantSlug, item);
-
-  router.push(
-    `/restaurant/${encodeURIComponent(restaurantSlug)}/delivery/cart`
-  );
-
-  return;
-}
-
       /*
        * TAKEAWAY
        *
@@ -776,9 +743,6 @@ setTableNumber(
    */
   const getRestaurantUrl = () => {
 
-    if (orderType === "DELIVERY") {
-  return `/restaurant/${encodeURIComponent(restaurantSlug)}/delivery`;
-}
     if (
       orderType === "DINE_IN" &&
       tableId
@@ -807,9 +771,6 @@ setTableNumber(
   };
 
   const getCartUrl = () => {
-    if (orderType === "DELIVERY") {
-  return `/restaurant/${encodeURIComponent(restaurantSlug)}/delivery/cart`;
-}
     if (
       orderType === "DINE_IN" &&
       tableId
@@ -951,8 +912,6 @@ setTableNumber(
         ? ` • TABLE ${tableNumber}`
         : ""
     }`
-  : orderType === "DELIVERY"
-  ? "DELIVERY"
   : "TAKEAWAY"}
             </div>
 
@@ -969,8 +928,6 @@ setTableNumber(
                   : sessionLoading
                   ? "Preparing shared table cart..."
                   : "Preparing table session..."
-                : orderType === "DELIVERY"
-                ? "Your order will be delivered to your address."
                 : "Your order will be prepared for takeaway."}
             </div>
           </div>
@@ -1439,9 +1396,7 @@ setTableNumber(
   ? "Adding..."
   : orderType === "DINE_IN"
     ? "Add to Shared Cart"
-    : orderType === "DELIVERY"
-      ? "Add to Delivery Cart"
-      : "Add to Cart"}
+    : "Add to Cart"}
             </button>
 
             {orderType ===

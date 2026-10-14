@@ -197,7 +197,6 @@ export async function PUT(request: Request) {
     }
 
     const allowedFeatures = {
-      delivery: Boolean(features?.delivery),
       vip_lounge: Boolean(features?.vip_lounge),
       bar: Boolean(features?.bar),
       live_entertainment: Boolean(

@@ -8,7 +8,6 @@ type Restaurant = {
   slug: string;
   is_active: boolean;
   features: {
-    delivery: boolean;
     vip_lounge: boolean;
     bar: boolean;
     live_entertainment: boolean;
@@ -16,14 +15,12 @@ type Restaurant = {
 };
 
 type FeatureConfig = {
-  delivery: boolean;
   vip_lounge: boolean;
   bar: boolean;
   live_entertainment: boolean;
 };
 
 type FeatureKey =
-  | "delivery"
   | "vip_lounge"
   | "bar"
   | "live_entertainment";
@@ -34,13 +31,6 @@ const featureData: {
   description: string;
   icon: string;
 }[] = [
-  {
-    key: "delivery",
-    title: "Delivery",
-    description:
-      "Enable delivery ordering and delivery-related functionality for this restaurant.",
-    icon: "🚚",
-  },
   {
     key: "vip_lounge",
     title: "VIP Lounge",
@@ -70,7 +60,6 @@ export default function FeaturesPage() {
     useState<string>("");
 
   const [features, setFeatures] = useState<FeatureConfig>({
-  delivery: false,
   vip_lounge: false,
   bar: false,
   live_entertainment: false,
@@ -94,7 +83,6 @@ export default function FeaturesPage() {
 
     if (restaurant) {
       setFeatures({
-        delivery: restaurant.features?.delivery ?? false,
         vip_lounge: restaurant.features?.vip_lounge ?? false,
         bar: restaurant.features?.bar ?? false,
         live_entertainment:

@@ -8,7 +8,6 @@ type PermissionAccess = "FULL" | "VIEW" | "NONE";
 type Permissions = Record<string, PermissionAccess>;
 
 type RestaurantFeatures = {
-  delivery: boolean;
   vip_lounge: boolean;
   bar: boolean;
   live_entertainment: boolean;
@@ -82,12 +81,6 @@ const navigation: {
         name: "Reviews",
         path: "/restaurant/reviews",
         module: "reviews",
-      },
-      {
-        name: "Delivery",
-        path: "/restaurant/delivery",
-        module: "delivery",
-        feature: "delivery",
       },
       {
         name: "VIP Lounge",

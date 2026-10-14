@@ -6,7 +6,6 @@ import {
   useRouter,
 } from "next/navigation";
 type Features = {
-  delivery?: boolean;
   vip_lounge?: boolean;
   bar?: boolean;
   live_entertainment?: boolean;
@@ -633,11 +632,6 @@ export default function RestaurantDetailsClient() {
             gap: "14px",
           }}
         >
-          <FeatureCard
-            title="Delivery"
-            enabled={restaurant.features?.delivery}
-          />
-
           <FeatureCard
             title="VIP Lounge"
             enabled={

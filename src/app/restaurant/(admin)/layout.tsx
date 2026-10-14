@@ -16,14 +16,12 @@ type Permissions = Record<string, PermissionAccess>;
 
 
 type RestaurantFeatures = {
-  delivery: boolean;
   vip_lounge: boolean;
   bar: boolean;
   live_entertainment: boolean;
 };
 
 const DEFAULT_FEATURES: RestaurantFeatures = {
-  delivery: false,
   vip_lounge: false,
   bar: false,
   live_entertainment: false,
@@ -53,7 +51,6 @@ const featureRoutes: {
   prefix: string;
   feature: keyof RestaurantFeatures;
 }[] = [
-  { prefix: "/restaurant/delivery", feature: "delivery" },
   { prefix: "/restaurant/vip-lounge", feature: "vip_lounge" },
   { prefix: "/restaurant/bar", feature: "bar" },
   {
@@ -74,7 +71,6 @@ function normalizeFeatures(value: unknown): RestaurantFeatures {
   const input = value as Record<string, unknown>;
 
   return {
-    delivery: input.delivery === true,
     vip_lounge: input.vip_lounge === true,
     bar: input.bar === true,
     live_entertainment: input.live_entertainment === true,

@@ -2,14 +2,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { parseTimestamp } from "@/lib/timezone";
-import {
-  calculateGoogleDrivingDistance,
-  getLegacyDeliveryPricing,
-  isDeliverySchemaMissingError,
-  selectDeliveryTier,
-  validateDeliveryTiers,
-  type DeliveryPricingTier,
-} from "@/lib/delivery-pricing";
 
 type RequestItem = {
   productId: number;
@@ -24,19 +16,12 @@ type OrderRequest = {
     phone: string;
     address: string | null;
   };
-  orderType: "TAKEAWAY" | "DELIVERY" | "DINE_IN";
+  orderType: "TAKEAWAY" | "DINE_IN";
   paymentMethod: "CASH" | "UPI";
   couponCode?: string | null;
   items: RequestItem[];
   tableId?: number | null;
   tableSessionId?: number | null;
-  delivery?: {
-    pincode: string;
-    address: string;
-    deliveryFee?: number;
-    latitude: number;
-    longitude: number;
-  };
 };
 
 export async function POST(request: Request) {
@@ -52,49 +37,13 @@ export async function POST(request: Request) {
       !body.restaurantSlug ||
       !body.customer?.name?.trim() ||
       !body.customer?.phone?.trim() ||
-      !["TAKEAWAY", "DELIVERY", "DINE_IN"].includes(body.orderType) ||
+      !["TAKEAWAY", "DINE_IN"].includes(body.orderType) ||
       !["CASH", "UPI"].includes(body.paymentMethod)
     ) {
       return NextResponse.json(
         { error: "Invalid order details." },
         { status: 400 }
       );
-    }
-
-    // DELIVERY VALIDATION
-    if (body.orderType === "DELIVERY") {
-      const address = body.delivery?.address?.trim();
-      const pincode = body.delivery?.pincode?.trim();
-
-      if (!address) {
-        return NextResponse.json(
-          { error: "A delivery address is required." },
-          { status: 400 }
-        );
-      }
-
-      if (!pincode || !/^\d{6}$/.test(pincode)) {
-        return NextResponse.json(
-          { error: "Enter a valid 6-digit delivery pincode." },
-          { status: 400 }
-        );
-      }
-
-      if (
-        typeof body.delivery?.latitude !== "number" ||
-        typeof body.delivery.longitude !== "number" ||
-        !Number.isFinite(body.delivery.latitude) ||
-        !Number.isFinite(body.delivery.longitude) ||
-        body.delivery.latitude < -90 ||
-        body.delivery.latitude > 90 ||
-        body.delivery.longitude < -180 ||
-        body.delivery.longitude > 180
-      ) {
-        return NextResponse.json(
-          { error: "Select a valid delivery location on the map." },
-          { status: 400 }
-        );
-      }
     }
 
     // DINE-IN VALIDATION
@@ -134,114 +83,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // DELIVERY SETTINGS
-    let deliveryFee = 0;
-    const deliveryZoneId: number | null = null;
-    let deliveryAddress = "";
-    let deliveryPincode = "";
-    let verifiedDistanceKm: number | null = null;
-    let verifiedRouteDurationSeconds: number | null = null;
-
-    if (body.orderType === "DELIVERY") {
-      const initialSettingsResult = await supabase
-        .from("restaurant_delivery_settings")
-        .select(
-          "delivery_fee, minimum_order_amount, free_delivery_minimum, is_enabled, origin_latitude, origin_longitude, max_delivery_distance_km, pricing_tiers"
-        )
-        .eq("restaurant_id", restaurant.id)
-        .maybeSingle();
-      let settings: Record<string, unknown> | null =
-        initialSettingsResult.data as Record<string, unknown> | null;
-      let settingsError = initialSettingsResult.error;
-
-      if (settingsError && isDeliverySchemaMissingError(settingsError)) {
-        const legacyResult = await supabase
-          .from("restaurant_delivery_settings")
-          .select(
-            "delivery_fee, minimum_order_amount, free_delivery_minimum, is_enabled, origin_latitude, origin_longitude, fee_0_3_km, fee_3_5_km, fee_5_10_km"
-          )
-          .eq("restaurant_id", restaurant.id)
-          .maybeSingle();
-        settings = legacyResult.data as Record<string, unknown> | null;
-        settingsError = legacyResult.error;
-        if (settings) {
-          const legacyPricing = getLegacyDeliveryPricing(settings);
-          settings = {
-            ...settings,
-            max_delivery_distance_km: legacyPricing.maxDistanceKm,
-            pricing_tiers: legacyPricing.tiers,
-          };
-        }
-      }
-
-      if (settingsError) throw settingsError;
-
-      if (!settings || !settings.is_enabled) {
-        return NextResponse.json(
-          { error: "Delivery is currently unavailable." },
-          { status: 409 }
-        );
-      }
-
-      deliveryAddress = body.delivery!.address.trim();
-      deliveryPincode = body.delivery!.pincode.trim();
-      const originLatitude = Number(settings.origin_latitude);
-      const originLongitude = Number(settings.origin_longitude);
-
-      if (
-        !Number.isFinite(originLatitude) ||
-        !Number.isFinite(originLongitude)
-      ) {
-        return NextResponse.json(
-          { error: "This restaurant has not configured a delivery location." },
-          { status: 409 }
-        );
-      }
-
-      const maxDistanceKm = Number(settings.max_delivery_distance_km);
-      const tiers = (settings.pricing_tiers ?? []) as DeliveryPricingTier[];
-      const tierError = validateDeliveryTiers(tiers, maxDistanceKm);
-
-      if (tierError) {
-        return NextResponse.json(
-          { error: "The restaurant delivery pricing is not configured correctly." },
-          { status: 409 }
-        );
-      }
-
-      const route = await calculateGoogleDrivingDistance(
-        {
-          latitude: originLatitude,
-          longitude: originLongitude,
-        },
-        {
-          latitude: body.delivery!.latitude,
-          longitude: body.delivery!.longitude,
-        }
-      );
-      const tier = selectDeliveryTier(
-        tiers,
-        route.distanceKm,
-        maxDistanceKm
-      );
-
-      if (!tier) {
-        return NextResponse.json(
-          {
-            error: `This address is outside the ${maxDistanceKm} km delivery radius.`,
-          },
-          { status: 422 }
-        );
-      }
-
-      deliveryFee = tier.fee;
-      verifiedDistanceKm = route.distanceKm;
-      verifiedRouteDurationSeconds = route.durationSeconds;
-    }
-
     // BUILD CART QUANTITIES
     // Dine-in orders use the server-side shared table cart.
-    // Takeaway and delivery use the submitted cart item IDs.
+    // Takeaway uses the submitted cart item IDs.
     const quantities = new Map<string, RequestItem>();
 
     if (body.orderType === "DINE_IN") {
@@ -439,46 +283,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // DELIVERY MINIMUM ORDER AND FREE DELIVERY
-    if (body.orderType === "DELIVERY") {
-      const {
-        data: settings,
-        error: settingsError,
-      } = await supabase
-        .from("restaurant_delivery_settings")
-        .select("minimum_order_amount, free_delivery_minimum")
-        .eq("restaurant_id", restaurant.id)
-        .maybeSingle();
-
-      if (settingsError) throw settingsError;
-
-      const minimumOrder = Number(
-        settings?.minimum_order_amount ?? 0
-      );
-
-      if (subtotal < minimumOrder) {
-        return NextResponse.json(
-          {
-            error: `The minimum delivery order is ₹${minimumOrder}.`,
-            minimumOrder,
-          },
-          { status: 400 }
-        );
-      }
-
-      const freeDeliveryMinimum =
-        settings?.free_delivery_minimum == null
-          ? null
-          : Number(settings.free_delivery_minimum);
-
-      if (
-        freeDeliveryMinimum !== null &&
-        subtotal >= freeDeliveryMinimum
-      ) {
-        deliveryFee = 0;
-      }
-    }
-
     // COUPON
     let couponDiscount = 0;
     let couponId: number | null = null;
@@ -537,7 +341,7 @@ export async function POST(request: Request) {
     }
 
     // FINAL TOTAL
-    const total = subtotal - couponDiscount + deliveryFee;
+    const total = subtotal - couponDiscount;
 
     // CUSTOMER
     const customerResult = await supabase
@@ -608,7 +412,6 @@ export async function POST(request: Request) {
         tax_amount: 0,
         service_charge: 0,
         packaging_charge: 0,
-        delivery_fee: body.orderType === "DELIVERY" ? deliveryFee : 0,
         total,
         payment_status: "PENDING",
         payment_method: body.paymentMethod,
@@ -634,46 +437,6 @@ export async function POST(request: Request) {
       );
 
     if (itemsError) throw itemsError;
-
-    // CREATE DELIVERY RECORD
-    if (body.orderType === "DELIVERY") {
-      const deliveryPayload = {
-        order_id: order.id,
-        restaurant_id: restaurant.id,
-        delivery_zone_id: deliveryZoneId,
-        recipient_name: body.customer.name.trim(),
-        recipient_phone: body.customer.phone.trim(),
-        delivery_address: deliveryAddress,
-        pincode: deliveryPincode,
-        delivery_latitude: body.delivery?.latitude ?? null,
-        delivery_longitude: body.delivery?.longitude ?? null,
-        distance_km: verifiedDistanceKm,
-        route_duration_seconds: verifiedRouteDurationSeconds,
-        delivery_status: "PENDING",
-      };
-      let { error: deliveryError } = await supabase
-        .from("order_deliveries")
-        .insert(deliveryPayload);
-
-      if (deliveryError && isDeliverySchemaMissingError(deliveryError)) {
-        const legacyDeliveryPayload = Object.fromEntries(
-          Object.entries(deliveryPayload).filter(
-            ([key]) =>
-              ![
-                "delivery_latitude",
-                "delivery_longitude",
-                "distance_km",
-                "route_duration_seconds",
-              ].includes(key)
-          )
-        );
-        ({ error: deliveryError } = await supabase
-          .from("order_deliveries")
-          .insert(legacyDeliveryPayload));
-      }
-
-      if (deliveryError) throw deliveryError;
-    }
 
     // COUPON USAGE
     if (couponId !== null) {
@@ -713,7 +476,6 @@ export async function POST(request: Request) {
       orderId: order.id,
       subtotal,
       couponDiscount,
-      deliveryFee,
       total,
     });
   } catch (error) {
@@ -721,11 +483,6 @@ export async function POST(request: Request) {
 
     // Best-effort cleanup if order creation failed partway through.
     if (createdOrderId !== null) {
-      await supabase
-        .from("order_deliveries")
-        .delete()
-        .eq("order_id", createdOrderId);
-
       await supabase
         .from("order_items")
         .delete()

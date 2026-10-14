@@ -1,14 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  useRouter,
-  useSearchParams,
-  usePathname,
-} from "next/navigation";import {
-  getCartCount,
-} from "@/lib/customer/cart";
-import { getDeliveryCartCount } from "@/lib/customer/delivery-cart";
+import { useRouter, useSearchParams } from "next/navigation";
+import { getCartCount } from "@/lib/customer/cart";
 
 type Restaurant = {
   id: number;
@@ -21,7 +15,6 @@ type Restaurant = {
   is_open: boolean;
   accept_orders: boolean;
   features: {
-    delivery: boolean;
     vip_lounge: boolean;
     bar: boolean;
     live_entertainment: boolean;
@@ -94,13 +87,6 @@ export default function StorefrontClient({
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const pathname = usePathname();
-
-  const isDeliveryPage = pathname.endsWith("/delivery");
-
-  // Keep the rest of your existing component code.
-
-
   /*
    * CUSTOMER ORDER MODE
    *
@@ -113,9 +99,8 @@ export default function StorefrontClient({
    * Table QR:
    * /restaurant/test-restaurant?orderType=DINE_IN&tableId=2
    */
- const orderType = isDeliveryPage
-  ? "DELIVERY"
-  : searchParams.get("orderType") === "DINE_IN"
+ const orderType =
+  searchParams.get("orderType") === "DINE_IN"
     ? "DINE_IN"
     : "TAKEAWAY";
 
@@ -175,7 +160,7 @@ export default function StorefrontClient({
   if (restaurantSlug) {
     loadStorefront();
   }
-}, [restaurantSlug, isDeliveryPage]);
+}, [restaurantSlug]);
 
   const loadStorefront = async () => {
     try {
@@ -183,9 +168,7 @@ export default function StorefrontClient({
       setError("");
 
       const response = await fetch(
-        isDeliveryPage
-  ? `/api/customer/storefront/${restaurantSlug}/delivery`
-  : `/api/customer/storefront/${restaurantSlug}`,
+        `/api/customer/storefront/${restaurantSlug}`,
         {
           cache: "no-store",
         }
@@ -400,25 +383,17 @@ setRestaurant(data.restaurant);
 
   useEffect(() => {
   const updateCartCount = () => {
-    setCartCount(
-      isDeliveryPage
-        ? getDeliveryCartCount(restaurantSlug)
-        : getCartCount(restaurantSlug)
-    );
+    setCartCount(getCartCount(restaurantSlug));
   };
 
   updateCartCount();
 
-  const eventName = isDeliveryPage
-    ? "soraminds-delivery-cart-updated"
-    : "soraminds-cart-updated";
-
-  window.addEventListener(eventName, updateCartCount);
+  window.addEventListener("soraminds-cart-updated", updateCartCount);
 
   return () => {
-    window.removeEventListener(eventName, updateCartCount);
+    window.removeEventListener("soraminds-cart-updated", updateCartCount);
   };
-}, [restaurantSlug, isDeliveryPage]);
+}, [restaurantSlug]);
 
   const filteredProducts = products.filter(
     (product) => {
@@ -572,12 +547,10 @@ setRestaurant(data.restaurant);
 
           <button
             onClick={() =>
-  router.push(
-    isDeliveryPage
-      ? `/restaurant/${restaurantSlug}/delivery/cart`
-      : `/restaurant/${restaurantSlug}/cart${getCustomerContextQuery()}`
-  )
-}
+              router.push(
+                `/restaurant/${restaurantSlug}/cart${getCustomerContextQuery()}`
+              )
+            }
             style={{
               border: "none",
               background: accent,
@@ -651,8 +624,6 @@ setRestaurant(data.restaurant);
         ? ` • TABLE ${tableInfo.tableNumber}`
         : ""
     }`
-  : orderType === "DELIVERY"
-  ? "DELIVERY"
   : "TAKEAWAY"}
               </div>
             </div>
@@ -1123,10 +1094,8 @@ setRestaurant(data.restaurant);
                     key={product.id}
                     onClick={() =>
                      router.push(
-  isDeliveryPage
-    ? `/restaurant/${restaurantSlug}/delivery/product/${product.slug}`
-    : `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
-)
+                       `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
+                     )
                     }
                     style={{
                       background: "#fff",
@@ -1224,12 +1193,10 @@ setRestaurant(data.restaurant);
 
                         <button
                           onClick={(event) => {
-                            event.stopPropagation();              
-router.push(
-  isDeliveryPage
-    ? `/restaurant/${restaurantSlug}/delivery/product/${product.slug}`
-    : `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
-);
+                            event.stopPropagation();
+                            router.push(
+                              `/restaurant/${restaurantSlug}/product/${product.slug}${getCustomerContextQuery()}`
+                            );
                           }}
                           disabled={
                             !product.is_available ||

@@ -274,7 +274,6 @@ export async function POST(request: Request) {
         timezone,
         is_active: true,
         features: {
-          delivery: false,
           vip_lounge: false,
           bar: false,
           live_entertainment: false,

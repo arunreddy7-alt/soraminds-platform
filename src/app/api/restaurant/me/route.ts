@@ -4,17 +4,11 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 
-const SUPPORTED_FEATURES = [
-  "delivery",
-  "vip_lounge",
-  "bar",
-  "live_entertainment",
-] as const;
-
-type RestaurantFeatures = Record<
-  (typeof SUPPORTED_FEATURES)[number],
-  boolean
->;
+type RestaurantFeatures = {
+  vip_lounge: boolean;
+  bar: boolean;
+  live_entertainment: boolean;
+};
 
 function normalizeFeatures(value: unknown): RestaurantFeatures {
   const input =
@@ -25,7 +19,6 @@ function normalizeFeatures(value: unknown): RestaurantFeatures {
       : {};
 
   return {
-    delivery: input.delivery === true,
     vip_lounge: input.vip_lounge === true,
     bar: input.bar === true,
     live_entertainment: input.live_entertainment === true,

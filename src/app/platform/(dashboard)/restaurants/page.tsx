@@ -13,7 +13,6 @@ type Restaurant = {
   accept_orders: boolean;
   is_active: boolean;
   features: {
-    delivery: boolean;
     vip_lounge: boolean;
     bar: boolean;
     live_entertainment: boolean;

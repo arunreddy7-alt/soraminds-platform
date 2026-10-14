@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 
 type Features = {
-  delivery: boolean;
   vip_lounge: boolean;
   bar: boolean;
   live_entertainment: boolean;
@@ -24,7 +23,6 @@ type RestaurantSettings = {
 };
 
 const DEFAULT_FEATURES: Features = {
-  delivery: false,
   vip_lounge: false,
   bar: false,
   live_entertainment: false,

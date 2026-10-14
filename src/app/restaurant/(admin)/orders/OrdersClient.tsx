@@ -32,14 +32,6 @@ type Customer = {
   phone: string | null;
 };
 
-type OrderDelivery = {
-  order_id: number;
-  recipient_name: string | null;
-  recipient_phone: string | null;
-  delivery_address: string | null;
-  pincode: string | null;
-};
-
 type OrderItem = {
   id: number;
   order_id: number;
@@ -59,7 +51,6 @@ type Product = {
 type SelectedOrder = {
   order: Order;
   customer: Customer | null;
-  delivery: OrderDelivery | null;
   items: {
     item: OrderItem;
     product: Product | null;
@@ -80,7 +71,6 @@ const ORDER_TYPE_OPTIONS = [
   "ALL",
   "DINE_IN",
   "TAKEAWAY",
-  "DELIVERY",
 ];
 
 function formatCurrency(value: number) {
@@ -433,25 +423,6 @@ useEffect(() => {
     try {
       const supabase = createClient();
 
-      let delivery: OrderDelivery | null = null;
-
-if (order.order_type === "DELIVERY") {
-  const { data, error } = await supabase
-    .from("order_deliveries")
-    .select(
-      "order_id, recipient_name, recipient_phone, delivery_address, pincode"
-    )
-    .eq("order_id", order.id)
-    .maybeSingle();
-
-  if (error) {
-    console.error("Failed to load delivery details:", error);
-    throw error;
-  }
-
-  delivery = data as OrderDelivery | null;
-}
-
       const { data: itemsData } = await supabase
         .from("order_items")
         .select(
@@ -506,7 +477,6 @@ if (order.order_type === "DELIVERY") {
       setSelectedOrder({
   order,
   customer,
-  delivery,
   items: items.map((item) => ({
     item,
     product: item.product_id
@@ -1362,77 +1332,6 @@ async function updateOrderStatus(
                 </>
               )}
             </div>
-
-            {selectedOrder.order.order_type === "DELIVERY" && (
-  <div
-    style={{
-      padding: "18px 22px",
-      borderBottom: "1px solid #eef0f2",
-      background: "#fcfcfd",
-    }}
-  >
-    <div
-      style={{
-        fontSize: "10px",
-        fontWeight: 700,
-        color: "#9a9da4",
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        marginBottom: "10px",
-      }}
-    >
-      Delivery Details
-    </div>
-
-    <div
-      style={{
-        fontSize: "12px",
-        fontWeight: 600,
-        color: "#30333a",
-        marginBottom: "6px",
-      }}
-    >
-      Deliver to:{" "}
-      {selectedOrder.delivery?.recipient_name || "Not available"}
-    </div>
-
-    <div
-      style={{
-        fontSize: "12px",
-        color: "#555a63",
-        lineHeight: 1.6,
-        overflowWrap: "anywhere",
-      }}
-    >
-      <strong>Address:</strong>{" "}
-      {selectedOrder.delivery?.delivery_address || "Address not available"}
-    </div>
-
-    <div
-      style={{
-        fontSize: "12px",
-        color: "#555a63",
-        marginTop: "6px",
-      }}
-    >
-      <strong>Pincode:</strong>{" "}
-      {selectedOrder.delivery?.pincode || "Not available"}
-    </div>
-
-    {selectedOrder.delivery?.recipient_phone && (
-      <div
-        style={{
-          fontSize: "12px",
-          color: "#555a63",
-          marginTop: "6px",
-        }}
-      >
-        <strong>Delivery Phone:</strong>{" "}
-        {selectedOrder.delivery.recipient_phone}
-      </div>
-    )}
-  </div>
-)}
 
             {/* Items */}
             <div
