@@ -39,9 +39,7 @@ type SharedCartResponse = {
   };
 };
 
-function formatCurrency(value: number) {
-  return `₹${value.toFixed(2)}`;
-}
+import { formatCurrency as formatCurrencyWithCode } from "@/lib/currency";
 
 const inputStyle = {
   width: "100%",
@@ -92,12 +90,29 @@ export default function CheckoutClient({
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
+  const [currency, setCurrency] = useState("INR");
+
+  useEffect(() => {
+    fetch(`/api/customer/storefront/${restaurantSlug}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.restaurant?.features?.currency) {
+          setCurrency(data.restaurant.features.currency);
+        }
+      })
+      .catch(() => {});
+  }, [restaurantSlug]);
+
+  const formatCurrency = (value: number) => formatCurrencyWithCode(value, currency);
 
   // Load the correct cart for the selected order type.
   useEffect(() => {
     let cancelled = false;
 
     async function loadCheckoutCart() {
+      // Always reset submission state on fresh load — fixes the glitch where
+      // Next.js reuses a cached component instance that still has submitted=true
+      setSubmitted(false);
       setError("");
       setMounted(false);
 
@@ -298,6 +313,7 @@ export default function CheckoutClient({
         items: items.map((item) => ({
           productId: item.productId,
           variantId: item.variantId,
+          variantName: item.variantName ?? null,
           quantity: item.quantity,
         })),
       };

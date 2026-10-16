@@ -9,6 +9,7 @@ import {
   getRestaurantTimeZone,
   getZonedDateRange,
 } from "@/lib/timezone";
+import { getCurrencySymbol } from "@/lib/currency";
 
 type RangeType =
   | "today"
@@ -83,8 +84,10 @@ type Payment = {
   created_at: string;
 };
 
-function formatCurrency(value: number) {
-  return `₹${value.toLocaleString("en-IN", {
+function formatCurrency(value: number, curr = "INR") {
+  const sym = getCurrencySymbol(curr);
+  return `${sym}${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
 }
@@ -153,6 +156,9 @@ export default function ReportsClient() {
 
   const [error, setError] =
     useState("");
+
+  const [currency, setCurrency] = useState("INR");
+  const formatMoney = (val: number) => formatCurrency(val, currency);
 
   const [search, setSearch] =
     useState("");
@@ -268,7 +274,7 @@ export default function ReportsClient() {
       const { data: restaurant, error: restaurantError } =
         await supabase
           .from("restaurants")
-          .select("id")
+          .select("id, features, timezone")
           .eq("id", currentRestaurantId)
           .single();
 
@@ -276,7 +282,14 @@ export default function ReportsClient() {
         throw new Error(restaurantError.message);
       }
 
-      const timeZone = getRestaurantTimeZone(null);
+      if (restaurant?.features && typeof restaurant.features === "object") {
+        const feat = restaurant.features as Record<string, unknown>;
+        if (typeof feat.currency === "string" && feat.currency.trim()) {
+          setCurrency(feat.currency.trim().toUpperCase());
+        }
+      }
+
+      const timeZone = getRestaurantTimeZone(restaurant?.timezone || null);
       setRestaurantTimeZone(timeZone);
 
       const {
@@ -1747,7 +1760,7 @@ export default function ReportsClient() {
             {[
               [
                 "Revenue",
-                formatCurrency(
+                formatMoney(
                   salesSummary.revenue
                 ),
               ],
@@ -1757,13 +1770,13 @@ export default function ReportsClient() {
               ],
               [
                 "Subtotal",
-                formatCurrency(
+                formatMoney(
                   salesSummary.subtotal
                 ),
               ],
               [
                 "Tax",
-                formatCurrency(
+                formatMoney(
                   salesSummary.tax
                 ),
               ],
@@ -1899,7 +1912,7 @@ export default function ReportsClient() {
                         "#202228",
                     }}
                   >
-                    {formatCurrency(
+                    {formatMoney(
                       Number(
                         value
                       )
@@ -2105,7 +2118,7 @@ export default function ReportsClient() {
                                 "600",
                             }}
                           >
-                            {formatCurrency(
+                            {formatMoney(
                               Number(
                                 order.total ||
                                   0
@@ -2329,7 +2342,7 @@ export default function ReportsClient() {
                               "600",
                           }}
                         >
-                          {formatCurrency(
+                          {formatMoney(
                             product.revenue
                           )}
                         </td>
@@ -2520,7 +2533,7 @@ export default function ReportsClient() {
                               "600",
                           }}
                         >
-                          {formatCurrency(
+                          {formatMoney(
                             customer.spend
                           )}
                         </td>
@@ -2694,7 +2707,7 @@ export default function ReportsClient() {
                               "600",
                           }}
                         >
-                          {formatCurrency(
+                          {formatMoney(
                             payment.amount
                           )}
                         </td>
@@ -2868,7 +2881,7 @@ export default function ReportsClient() {
                               "600",
                           }}
                         >
-                          {formatCurrency(
+                          {formatMoney(
                             coupon.discount
                           )}
                         </td>

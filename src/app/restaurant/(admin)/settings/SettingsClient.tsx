@@ -6,6 +6,7 @@ type Features = {
   vip_lounge: boolean;
   bar: boolean;
   live_entertainment: boolean;
+  currency?: string;
 };
 
 type RestaurantSettings = {
@@ -26,6 +27,7 @@ const DEFAULT_FEATURES: Features = {
   vip_lounge: false,
   bar: false,
   live_entertainment: false,
+  currency: "INR",
 };
 
 export default function SettingsClient() {
@@ -382,11 +384,7 @@ export default function SettingsClient() {
             }
           />
 
-          <div
-            style={{
-              gridColumn: "1 / -1",
-            }}
-          >
+          <div style={{ gridColumn: "1 / -1" }}>
             <Field
               label="Address"
               value={settings.address || ""}
@@ -394,6 +392,56 @@ export default function SettingsClient() {
                 updateField("address", value)
               }
             />
+          </div>
+
+          {/* CURRENCY */}
+          <div>
+            <label
+              style={{
+                display: "block",
+                marginBottom: "7px",
+                fontSize: "11px",
+                fontWeight: "600",
+                color: "#344054",
+              }}
+            >
+              Currency
+            </label>
+            <select
+              value={features.currency || "INR"}
+              onChange={(e) =>
+                setSettings((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        features: {
+                          ...(prev.features || DEFAULT_FEATURES),
+                          currency: e.target.value,
+                        },
+                      }
+                    : prev
+                )
+              }
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                padding: "10px 11px",
+                border: "1px solid #d0d5dd",
+                borderRadius: "7px",
+                fontSize: "12px",
+                outline: "none",
+                background: "#fff",
+              }}
+            >
+              <option value="INR">₹ INR — Indian Rupee</option>
+              <option value="USD">$ USD — US Dollar</option>
+              <option value="EUR">€ EUR — Euro</option>
+              <option value="GBP">£ GBP — British Pound</option>
+              <option value="AED">د.إ AED — UAE Dirham</option>
+              <option value="SGD">S$ SGD — Singapore Dollar</option>
+              <option value="AUD">A$ AUD — Australian Dollar</option>
+              <option value="CAD">C$ CAD — Canadian Dollar</option>
+            </select>
           </div>
 
           <div>

@@ -441,3 +441,85 @@ if (!isProductPayload(body)) {
     );
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const auth = await requireMenuManager();
+    if ("error" in auth) return auth.error;
+
+    const { searchParams } = new URL(request.url);
+    let productId = Number(
+      searchParams.get("id") || searchParams.get("productId")
+    );
+
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      try {
+        const body = await request.json();
+        productId = Number(body?.productId || body?.id);
+      } catch {
+        // Not a JSON body
+      }
+    }
+
+    if (!Number.isSafeInteger(productId) || productId <= 0) {
+      return NextResponse.json(
+        { error: "A valid product ID is required." },
+        { status: 400 }
+      );
+    }
+
+    // 1. Delete associated variants/add-ons
+    await auth.admin
+      .from("product_variants")
+      .delete()
+      .eq("product_id", productId);
+
+    // 2. Delete product record (with soft-delete fallback if past order history references it)
+    const { error: deleteError } = await auth.admin
+      .from("products")
+      .delete()
+      .eq("id", productId)
+      .eq("restaurant_id", auth.restaurantId);
+
+    if (deleteError) {
+      // If foreign key constraint prevents hard delete, soft-delete instead
+      if (deleteError.code === "23503") {
+        const { error: softError } = await auth.admin
+          .from("products")
+          .update({
+            is_active: false,
+            is_available: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", productId)
+          .eq("restaurant_id", auth.restaurantId);
+
+        if (softError) {
+          console.error("Product soft-delete error:", softError);
+          return NextResponse.json(
+            { error: "Failed to delete product." },
+            { status: 500 }
+          );
+        }
+      } else {
+        console.error("Product delete error:", deleteError);
+        return NextResponse.json(
+          { error: "Failed to delete product." },
+          { status: 500 }
+        );
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "Product deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Product DELETE error:", error);
+    return NextResponse.json(
+      { error: "Internal server error." },
+      { status: 500 }
+    );
+  }
+}
+

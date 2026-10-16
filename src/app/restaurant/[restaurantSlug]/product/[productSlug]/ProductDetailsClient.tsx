@@ -11,6 +11,7 @@ import {
 } from "next/navigation";
 
 import { addToCart } from "@/lib/cart";
+import { getCurrencySymbol } from "@/lib/currency";
 
 type Restaurant = {
   id: number;
@@ -19,6 +20,9 @@ type Restaurant = {
   accent_color: string | null;
   is_open: boolean;
   accept_orders: boolean;
+  features?: {
+    currency?: string;
+  } | null;
 };
 
 type Product = {
@@ -67,13 +71,13 @@ export default function ProductDetailsClient({
   restaurantSlug: string;
   productSlug: string;
 }) {
- const router = useRouter();
-const searchParams = useSearchParams();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
-const orderType =
-  searchParams.get("orderType") === "DINE_IN"
-    ? "DINE_IN"
-    : "TAKEAWAY";
+  const orderType =
+    searchParams.get("orderType") === "DINE_IN"
+      ? "DINE_IN"
+      : "TAKEAWAY";
 
   const tableIdParam = searchParams.get("tableId");
 
@@ -150,7 +154,7 @@ const orderType =
       if (!response.ok) {
         throw new Error(
           data.error ||
-            "Unable to load product."
+          "Unable to load product."
         );
       }
 
@@ -242,11 +246,11 @@ const orderType =
           if (data.session) {
             setTableSession(data.session);
 
-setTableNumber(
-  data.table?.tableNumber != null
-    ? String(data.table.tableNumber)
-    : null
-);
+            setTableNumber(
+              data.table?.tableNumber != null
+                ? String(data.table.tableNumber)
+                : null
+            );
 
             try {
               localStorage.setItem(
@@ -297,22 +301,22 @@ setTableNumber(
       if (!response.ok) {
         throw new Error(
           data.error ||
-            "Unable to start table session."
+          "Unable to start table session."
         );
       }
 
       setTableSession(data.session);
-setTableNumber(
-  data.table?.tableNumber != null
-    ? String(data.table.tableNumber)
-    : null
-);
+      setTableNumber(
+        data.table?.tableNumber != null
+          ? String(data.table.tableNumber)
+          : null
+      );
 
-setTableNumber(
-  data.table?.tableNumber != null
-    ? String(data.table.tableNumber)
-    : null
-);
+      setTableNumber(
+        data.table?.tableNumber != null
+          ? String(data.table.tableNumber)
+          : null
+      );
 
       try {
         localStorage.setItem(
@@ -407,7 +411,7 @@ setTableNumber(
     if (!response.ok) {
       throw new Error(
         data.error ||
-          "Unable to add item to shared cart."
+        "Unable to add item to shared cart."
       );
     }
 
@@ -492,7 +496,7 @@ setTableNumber(
           if (!response.ok) {
             throw new Error(
               data.error ||
-                "Unable to start table session."
+              "Unable to start table session."
             );
           }
 
@@ -537,7 +541,7 @@ setTableNumber(
         if (!response.ok) {
           throw new Error(
             data.error ||
-              "Unable to add item to shared cart."
+            "Unable to add item to shared cart."
           );
         }
 
@@ -646,22 +650,21 @@ setTableNumber(
   ) {
     const backUrl =
       orderType === "DINE_IN" &&
-      tableId
+        tableId
         ? `/restaurant/${encodeURIComponent(
-            restaurantSlug
-          )}?orderType=DINE_IN&tableId=${encodeURIComponent(
-            String(tableId)
-          )}${
-            sessionId &&
-            !Number.isNaN(sessionId)
-              ? `&sessionId=${encodeURIComponent(
-                  String(sessionId)
-                )}`
-              : ""
-          }`
+          restaurantSlug
+        )}?orderType=DINE_IN&tableId=${encodeURIComponent(
+          String(tableId)
+        )}${sessionId &&
+          !Number.isNaN(sessionId)
+          ? `&sessionId=${encodeURIComponent(
+            String(sessionId)
+          )}`
+          : ""
+        }`
         : `/restaurant/${encodeURIComponent(
-            restaurantSlug
-          )}?orderType=TAKEAWAY`;
+          restaurantSlug
+        )}?orderType=TAKEAWAY`;
 
     return (
       <div
@@ -751,18 +754,17 @@ setTableNumber(
         restaurantSlug
       )}?orderType=DINE_IN&tableId=${encodeURIComponent(
         String(tableId)
-      )}${
-        tableSession
+      )}${tableSession
           ? `&sessionId=${encodeURIComponent(
-              String(tableSession.id)
-            )}`
+            String(tableSession.id)
+          )}`
           : sessionId &&
             !Number.isNaN(sessionId)
-          ? `&sessionId=${encodeURIComponent(
+            ? `&sessionId=${encodeURIComponent(
               String(sessionId)
             )}`
-          : ""
-      }`;
+            : ""
+        }`;
     }
 
     return `/restaurant/${encodeURIComponent(
@@ -782,14 +784,13 @@ setTableNumber(
         restaurantSlug
       )}/cart?orderType=DINE_IN&tableId=${encodeURIComponent(
         String(tableId)
-      )}${
-        activeSessionId &&
-        !Number.isNaN(activeSessionId)
+      )}${activeSessionId &&
+          !Number.isNaN(activeSessionId)
           ? `&sessionId=${encodeURIComponent(
-              String(activeSessionId)
-            )}`
+            String(activeSessionId)
+          )}`
           : ""
-      }`;
+        }`;
     }
 
     return `/restaurant/${encodeURIComponent(
@@ -907,12 +908,11 @@ setTableNumber(
               }}
             >
               {orderType === "DINE_IN"
-  ? `DINE-IN${
-      tableNumber
-        ? ` • TABLE ${tableNumber}`
-        : ""
-    }`
-  : "TAKEAWAY"}
+                ? `DINE-IN${tableNumber
+                  ? ` • TABLE ${tableNumber}`
+                  : ""
+                }`
+                : "TAKEAWAY"}
             </div>
 
             <div
@@ -926,8 +926,8 @@ setTableNumber(
                 ? tableSession
                   ? `Shared table cart • Join code: ${tableSession.group_code}`
                   : sessionLoading
-                  ? "Preparing shared table cart..."
-                  : "Preparing table session..."
+                    ? "Preparing shared table cart..."
+                    : "Preparing table session..."
                 : "Your order will be prepared for takeaway."}
             </div>
           </div>
@@ -963,7 +963,7 @@ setTableNumber(
           style={{
             display: "grid",
             gridTemplateColumns:
-              "minmax(0, 1fr) minmax(0, 1fr)",
+              "minmax(0, 1.05fr) minmax(0, 0.95fr)",
             gap: "40px",
             alignItems: "start",
           }}
@@ -1031,11 +1031,10 @@ setTableNumber(
                 style={{
                   width: "12px",
                   height: "12px",
-                  border: `1px solid ${
-                    product.is_vegetarian
+                  border: `1px solid ${product.is_vegetarian
                       ? "#12b76a"
                       : "#f04438"
-                  }`,
+                    }`,
                   borderRadius: "3px",
                   display: "inline-flex",
                   alignItems: "center",
@@ -1106,12 +1105,12 @@ setTableNumber(
                   fontWeight: "700",
                 }}
               >
-                ₹{currentPrice}
+                {getCurrencySymbol(restaurant?.features?.currency)}{currentPrice}
               </span>
 
               {currentMrp &&
                 currentMrp >
-                  currentPrice && (
+                currentPrice && (
                   <span
                     style={{
                       fontSize: "13px",
@@ -1120,7 +1119,7 @@ setTableNumber(
                         "line-through",
                     }}
                   >
-                    ₹{currentMrp}
+                    {getCurrencySymbol(restaurant?.features?.currency)}{currentMrp}
                   </span>
                 )}
 
@@ -1128,7 +1127,7 @@ setTableNumber(
                 ?.discount_percent &&
                 selectedVariant
                   .discount_percent >
-                  0 && (
+                0 && (
                   <span
                     style={{
                       fontSize: "11px",
@@ -1253,10 +1252,8 @@ setTableNumber(
                                 "700",
                             }}
                           >
-                            ₹
-                            {
-                              variant.price
-                            }
+                            {getCurrencySymbol(restaurant?.features?.currency)}
+                            {variant.price}
                           </div>
                         </button>
                       );
@@ -1370,10 +1367,10 @@ setTableNumber(
                 border: "none",
                 background:
                   !canOrder ||
-                  addingToCart ||
-                  (orderType ===
-                    "DINE_IN" &&
-                    sessionLoading)
+                    addingToCart ||
+                    (orderType ===
+                      "DINE_IN" &&
+                      sessionLoading)
                     ? "#98a2b3"
                     : "#202228",
                 color: "#fff",
@@ -1381,10 +1378,10 @@ setTableNumber(
                 borderRadius: "8px",
                 cursor:
                   !canOrder ||
-                  addingToCart ||
-                  (orderType ===
-                    "DINE_IN" &&
-                    sessionLoading)
+                    addingToCart ||
+                    (orderType ===
+                      "DINE_IN" &&
+                      sessionLoading)
                     ? "not-allowed"
                     : "pointer",
                 fontSize: "12px",
@@ -1393,10 +1390,10 @@ setTableNumber(
               }}
             >
               {addingToCart
-  ? "Adding..."
-  : orderType === "DINE_IN"
-    ? "Add to Shared Cart"
-    : "Add to Cart"}
+                ? "Adding..."
+                : orderType === "DINE_IN"
+                  ? "Add to Shared Cart"
+                  : "Add to Cart"}
             </button>
 
             {orderType ===

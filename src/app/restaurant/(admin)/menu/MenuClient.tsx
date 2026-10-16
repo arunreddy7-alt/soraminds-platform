@@ -4,6 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
 import { createClient } from "@/lib/supabase/client";
+import {
+  parseProductMetadata,
+  buildProductDescription,
+  ProductMetadata,
+} from "@/lib/productMetadata";
+import {
+  CURRENCY_OPTIONS,
+  getCurrencySymbol,
+  formatCurrency as formatCurrencyWithCode,
+} from "@/lib/currency";
 
 type Category = {
   id: number;
@@ -47,12 +57,21 @@ type Variant = {
 type ImportRow = {
   name: string;
   description: string;
+  cleanDescription?: string;
   category: string;
   price: number;
   mrp: number | null;
   vegetarian: boolean;
+  dietType?: "veg" | "non-veg" | "egg";
   available: boolean;
   image: string;
+  calories?: number | null;
+  spiceLevel?: string | null;
+  nutritionTags?: string[];
+  allergens?: string | null;
+  course?: string | null;
+  searchKeywords?: string | null;
+  customization?: string | null;
   valid: boolean;
   error: string;
 };
@@ -74,8 +93,8 @@ function normalizeCategory(value: unknown) {
     .toLowerCase();
 }
 
-function formatCurrency(value: number) {
-  return `₹${Number(value || 0).toLocaleString("en-IN")}`;
+function formatCurrency(value: number, curr = "INR") {
+  return `${getCurrencySymbol(curr)}${Number(value || 0).toLocaleString()}`;
 }
 
 export default function MenuClient() {
@@ -87,6 +106,8 @@ export default function MenuClient() {
   );
 
   const [products, setProducts] = useState<Product[]>([]);
+  const [currency, setCurrency] = useState("INR");
+  const [savingCurrency, setSavingCurrency] = useState(false);
 
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] =
@@ -198,6 +219,7 @@ export default function MenuClient() {
     const [
       categoriesResult,
       productsResult,
+      restaurantResult,
     ] = await Promise.all([
       supabase
         .from("categories")
@@ -218,7 +240,23 @@ export default function MenuClient() {
         .order("created_at", {
           ascending: false,
         }),
+
+      supabase
+        .from("restaurants")
+        .select("features")
+        .eq("id", restaurant)
+        .maybeSingle(),
     ]);
+
+    if (
+      restaurantResult.data?.features &&
+      typeof restaurantResult.data.features === "object"
+    ) {
+      const feat = restaurantResult.data.features as Record<string, unknown>;
+      if (typeof feat.currency === "string" && feat.currency.trim()) {
+        setCurrency(feat.currency.trim().toUpperCase());
+      }
+    }
 
     if (categoriesResult.error) {
       setError(categoriesResult.error.message);
@@ -231,6 +269,49 @@ export default function MenuClient() {
     setCategories(categoriesResult.data || []);
     setProducts(productsResult.data || []);
     setLoading(false);
+  }
+
+  async function updateCurrency(newCurrency: string) {
+    if (!restaurantId || !canManageMenu) return;
+    setSavingCurrency(true);
+    try {
+      const supabase = createClient();
+      const { data: restData } = await supabase
+        .from("restaurants")
+        .select("features")
+        .eq("id", restaurantId)
+        .maybeSingle();
+
+      const existingFeatures =
+        restData?.features && typeof restData.features === "object"
+          ? (restData.features as Record<string, unknown>)
+          : {};
+
+      const updatedFeatures = {
+        ...existingFeatures,
+        currency: newCurrency,
+      };
+
+      const { error: updateErr } = await supabase
+        .from("restaurants")
+        .update({
+          features: updatedFeatures,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", restaurantId);
+
+      if (updateErr) {
+        console.error("Failed to update currency:", updateErr);
+        setError("Failed to update currency: " + updateErr.message);
+      } else {
+        setCurrency(newCurrency);
+      }
+    } catch (err) {
+      console.error("Currency update error:", err);
+      setError("Failed to update currency.");
+    } finally {
+      setSavingCurrency(false);
+    }
   }
 
   useEffect(() => {
@@ -278,166 +359,310 @@ export default function MenuClient() {
     availabilityFilter,
   ]);
 
-  
-async function saveCategory(
-  name: string,
-  description: string
-) {
-  if (!restaurantId || !name.trim()) {
-    return;
+
+  async function saveCategory(
+    name: string,
+    description: string
+  ) {
+    if (!restaurantId || !name.trim()) {
+      return;
+    }
+
+    setError("");
+
+    try {
+      const isEditing = !!editingCategory;
+
+      const response = await fetch(
+        "/api/restaurant/menu/categories",
+        {
+          method: isEditing ? "PATCH" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            ...(isEditing
+              ? { categoryId: editingCategory.id }
+              : {}),
+            name: name.trim(),
+            description: description.trim(),
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        setError(
+          result.error || "Failed to save category."
+        );
+        return;
+      }
+
+      setShowCategoryModal(false);
+      setEditingCategory(null);
+      setError("");
+
+      await loadMenu(restaurantId);
+    } catch (error) {
+      console.error("Save category error:", error);
+      setError("Something went wrong while saving the category.");
+    }
+  }
+
+
+  async function deleteCategory(category: Category) {
+    if (!restaurantId || !canManageMenu) return;
+
+    const assignedProducts = products.filter(
+      (product) => product.category_id === category.id
+    );
+
+    if (assignedProducts.length > 0) {
+      setError(
+        `Cannot delete "${category.name}" because ${assignedProducts.length} product(s) still use it. Move or delete those products first.`
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete the category "${category.name}"? This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setError("");
+
+try {
+  const response = await fetch(
+    `/api/restaurant/menu/categories?id=${category.id}`,
+    { method: "DELETE" }
+  );
+
+  // Read the response as text first to avoid the JSON parsing error.
+  const responseText = await response.text();
+
+  let result;
+
+  try {
+    result = JSON.parse(responseText);
+  } catch {
+    console.error("API returned non-JSON response:", responseText);
+
+    throw new Error(
+      `API returned HTML instead of JSON (HTTP ${response.status}). Check your API route location.`
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(result.error || "Failed to delete category.");
+  }
+
+  setCategories((current) =>
+    current.filter((item) => item.id !== category.id)
+  );
+
+  if (categoryFilter === category.id.toString()) {
+    setCategoryFilter("ALL");
   }
 
   setError("");
+  await loadMenu(restaurantId);
+} catch (err) {
+  console.error("Delete category error:", err);
 
-  try {
-    const isEditing = !!editingCategory;
+  setError(
+    err instanceof Error
+      ? err.message
+      : "Failed to delete category."
+  );
+}
 
-    const response = await fetch(
-      "/api/restaurant/menu/categories",
-      {
-        method: isEditing ? "PATCH" : "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ...(isEditing
-            ? { categoryId: editingCategory.id }
-            : {}),
-          name: name.trim(),
-          description: description.trim(),
-        }),
-      }
-    );
+  }
 
-    const result = await response.json();
-
-    if (!response.ok) {
-      setError(
-        result.error || "Failed to save category."
-      );
+  async function saveProduct(product: {
+    name: string;
+    description: string;
+    category_id: number;
+    price: number;
+    mrp: number | null;
+    image_url: string;
+    is_vegetarian: boolean;
+    is_available: boolean;
+  }) {
+    if (!restaurantId || !product.name.trim()) {
       return;
     }
 
-    setShowCategoryModal(false);
-    setEditingCategory(null);
     setError("");
 
-    await loadMenu(restaurantId);
-  } catch (error) {
-    console.error("Save category error:", error);
-    setError("Something went wrong while saving the category.");
-  }
-}
+    try {
+      const isEditing = !!editingProduct;
 
-  
-async function saveProduct(product: {
-  name: string;
-  description: string;
-  category_id: number;
-  price: number;
-  mrp: number | null;
-  image_url: string;
-  is_vegetarian: boolean;
-  is_available: boolean;
-}) {
-  if (!restaurantId || !product.name.trim()) {
-    return;
-  }
-
-  setError("");
-
-  try {
-    const isEditing = !!editingProduct;
-
-    const response = await fetch(
-      "/api/restaurant/menu/products",
-      {
-        method: isEditing ? "PATCH" : "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          ...(isEditing
-            ? { productId: editingProduct.id }
-            : {}),
-          name: product.name.trim(),
-          description: product.description.trim(),
-          category_id: product.category_id,
-          price: product.price,
-          mrp: product.mrp,
-          image_url: product.image_url.trim(),
-          is_vegetarian: product.is_vegetarian,
-          is_available: product.is_available,
-        }),
-      }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      setError(
-        result.error || "Failed to save product."
+      const response = await fetch(
+        "/api/restaurant/menu/products",
+        {
+          method: isEditing ? "PATCH" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            ...(isEditing
+              ? { productId: editingProduct.id }
+              : {}),
+            name: product.name.trim(),
+            description: product.description.trim(),
+            category_id: product.category_id,
+            price: product.price,
+            mrp: product.mrp,
+            image_url: product.image_url.trim(),
+            is_vegetarian: product.is_vegetarian,
+            is_available: product.is_available,
+          }),
+        }
       );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        setError(
+          result.error || "Failed to save product."
+        );
+        return;
+      }
+
+      setShowProductModal(false);
+      setEditingProduct(null);
+      setError("");
+
+      await loadMenu(restaurantId);
+    } catch (error) {
+      console.error("Save product error:", error);
+      setError("Something went wrong while saving the product.");
+    }
+  }
+
+
+
+  async function toggleAvailability(product: Product) {
+    if (!restaurantId || !canManageMenu) {
       return;
     }
 
-    setShowProductModal(false);
-    setEditingProduct(null);
-    setError("");
+    const nextAvailability = !product.is_available;
 
-    await loadMenu(restaurantId);
-  } catch (error) {
-    console.error("Save product error:", error);
-    setError("Something went wrong while saving the product.");
-  }
-}
-
-
-  
-async function toggleAvailability(product: Product) {
-  if (!restaurantId || !canManageMenu) {
-    return;
-  }
-
-  const nextAvailability = !product.is_available;
-
-  try {
-    const response = await fetch(
-      `/api/restaurant/menu/products/${product.id}/availability`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          is_available: nextAvailability,
-        }),
-      }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      setError(
-        result.error || "Failed to update availability."
+    try {
+      const response = await fetch(
+        `/api/restaurant/menu/products/${product.id}/availability`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            is_available: nextAvailability,
+          }),
+        }
       );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        setError(
+          result.error || "Failed to update availability."
+        );
+        return;
+      }
+
+      setProducts((current) =>
+        current.map((item) =>
+          item.id === product.id
+            ? { ...item, is_available: nextAvailability }
+            : item
+        )
+      );
+
+      setError("");
+    } catch (error) {
+      console.error("Toggle availability error:", error);
+      setError("Something went wrong updating availability.");
+    }
+  }
+
+  async function deleteProduct(product: Product) {
+    if (!restaurantId || !canManageMenu) {
       return;
     }
 
-    setProducts((current) =>
-      current.map((item) =>
-        item.id === product.id
-          ? { ...item, is_available: nextAvailability }
-          : item
-      )
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${product.name}"? This action cannot be undone.`
     );
 
-    setError("");
-  } catch (error) {
-    console.error("Toggle availability error:", error);
-    setError("Something went wrong updating availability.");
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(
+        `/api/restaurant/menu/products?id=${product.id}`,
+        {
+          method: "DELETE",
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to delete product.");
+      }
+
+      setProducts((current) => current.filter((p) => p.id !== product.id));
+      setError("");
+    } catch (err) {
+      console.error("Delete product error:", err);
+      setError(
+        err instanceof Error ? err.message : "Failed to delete product."
+      );
+    }
   }
-}
+
+
+  async function deleteAllProducts() {
+    if (!restaurantId || !canManageMenu || products.length === 0) return;
+
+    const first = window.confirm(
+      `Delete ALL ${products.length} products? This cannot be undone.`
+    );
+    if (!first) return;
+
+    const second = window.confirm(
+      `Are you really sure? All ${products.length} products will be permanently removed.`
+    );
+    if (!second) return;
+
+    let deleted = 0;
+    let failed = 0;
+
+    for (const product of products) {
+      try {
+        const response = await fetch(
+          `/api/restaurant/menu/products?id=${product.id}`,
+          { method: "DELETE" }
+        );
+        if (response.ok) {
+          deleted++;
+          setProducts((current) => current.filter((p) => p.id !== product.id));
+        } else {
+          failed++;
+        }
+      } catch {
+        failed++;
+      }
+    }
+
+    setError(
+      failed > 0
+        ? `${deleted} products deleted. ${failed} could not be deleted.`
+        : ""
+    );
+  }
 
 
   async function loadVariants(productId: number) {
@@ -462,31 +687,31 @@ async function toggleAvailability(product: Product) {
     setVariants(data || []);
   }
 
- 
-async function deleteVariant(variantId: number) {
-  try {
-    const response = await fetch(
-      `/api/restaurant/menu/variants/${variantId}`,
-      { method: "DELETE" }
-    );
 
-    const result = await response.json();
+  async function deleteVariant(variantId: number) {
+    try {
+      const response = await fetch(
+        `/api/restaurant/menu/variants/${variantId}`,
+        { method: "DELETE" }
+      );
 
-    if (!response.ok) {
-      setError(result.error || "Failed to delete variant.");
-      return;
+      const result = await response.json();
+
+      if (!response.ok) {
+        setError(result.error || "Failed to delete variant.");
+        return;
+      }
+
+      setVariants((current) =>
+        current.filter((variant) => variant.id !== variantId)
+      );
+
+      setError("");
+    } catch (error) {
+      console.error("Delete variant error:", error);
+      setError("Something went wrong deleting the variant.");
     }
-
-    setVariants((current) =>
-      current.filter((variant) => variant.id !== variantId)
-    );
-
-    setError("");
-  } catch (error) {
-    console.error("Delete variant error:", error);
-    setError("Something went wrong deleting the variant.");
   }
-}
 
 
   const categoryMap = useMemo(() => {
@@ -543,49 +768,98 @@ async function deleteVariant(variantId: number) {
         <div
           style={{
             display: "flex",
+            alignItems: "center",
             gap: "8px",
+            flexWrap: "wrap",
           }}
         >
+          {/* CURRENCY SELECTOR */}
           {permissionLoaded && canManageMenu && (
-          <button
-            onClick={() => {
-              setEditingCategory(null);
-              setShowCategoryModal(true);
-            }}
-            style={{
-              border: "1px solid #dfe2e7",
-              background: "#ffffff",
-              color: "#33363c",
-              borderRadius: "8px",
-              padding: "9px 13px",
-              fontSize: "12px",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            + Category
-          </button>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                background: "#ffffff",
+                border: "1px solid #dfe2e7",
+                borderRadius: "8px",
+                padding: "6px 10px",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 650,
+                  color: "#667085",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Currency:
+              </span>
+              <select
+                value={currency}
+                disabled={savingCurrency}
+                onChange={(e) => updateCurrency(e.target.value)}
+                style={{
+                  border: "none",
+                  background: "transparent",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#1d2939",
+                  cursor: "pointer",
+                  outline: "none",
+                }}
+                title="Select menu currency (updates customer storefront & checkout)"
+              >
+                {CURRENCY_OPTIONS.map((opt) => (
+                  <option key={opt.code} value={opt.code}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
 
           {permissionLoaded && canManageMenu && (
-          <button
-            onClick={() => {
-              setEditingProduct(null);
-              setShowProductModal(true);
-            }}
-            style={{
-              border: "none",
-              background: "#111111",
-              color: "#ffffff",
-              borderRadius: "8px",
-              padding: "9px 14px",
-              fontSize: "12px",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
-            + Product
-          </button>
+            <button
+              onClick={() => {
+                setEditingCategory(null);
+                setShowCategoryModal(true);
+              }}
+              style={{
+                border: "1px solid #dfe2e7",
+                background: "#ffffff",
+                color: "#33363c",
+                borderRadius: "8px",
+                padding: "9px 13px",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              + Category
+            </button>
+          )}
+
+          {permissionLoaded && canManageMenu && (
+            <button
+              onClick={() => {
+                setEditingProduct(null);
+                setShowProductModal(true);
+              }}
+              style={{
+                border: "none",
+                background: "#111111",
+                color: "#ffffff",
+                borderRadius: "8px",
+                padding: "9px 14px",
+                fontSize: "12px",
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              + Product
+            </button>
           )}
         </div>
       </div>
@@ -644,56 +918,93 @@ async function deleteVariant(variantId: number) {
         </button>
 
         {categories.map((category) => (
-          <button
+          <div
             key={category.id}
-            onClick={() =>
-              setCategoryFilter(
-                category.id.toString()
-              )
-            }
-            style={{
-              border: "none",
-              background:
-                categoryFilter ===
-                category.id.toString()
-                  ? "#111111"
-                  : "#f3f4f6",
-              color:
-                categoryFilter ===
-                category.id.toString()
-                  ? "#ffffff"
-                  : "#555a63",
-              borderRadius: "7px",
-              padding: "8px 12px",
-              fontSize: "11px",
-              fontWeight: 600,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-            }}
+            style={{ display: "inline-flex", alignItems: "center", gap: "3px", flexShrink: 0 }}
           >
-            {category.name}
-          </button>
+            <button
+              onClick={() => setCategoryFilter(category.id.toString())}
+              style={{
+                border: "none",
+                background:
+                  categoryFilter === category.id.toString()
+                    ? "#111111"
+                    : "#f3f4f6",
+                color:
+                  categoryFilter === category.id.toString()
+                    ? "#ffffff"
+                    : "#555a63",
+                borderRadius: "7px",
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {category.name}
+            </button>
+            {permissionLoaded && canManageMenu && (
+              <button
+                onClick={() => deleteCategory(category)}
+                title={`Delete ${category.name} category`}
+                aria-label={`Delete ${category.name} category`}
+                style={{
+                  border: "1px solid #fee2e2",
+                  background: "#fff1f2",
+                  color: "#b91c1c",
+                  borderRadius: "6px",
+                  padding: "5px 7px",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            )}
+          </div>
         ))}
 
         {permissionLoaded && canManageMenu && (
-        <div style={{ marginLeft: "auto" }}>
-          <button
-            onClick={() => setShowImportModal(true)}
-            style={{
-              border: "1px solid #dfe2e7",
-              background: "#ffffff",
-              color: "#555a63",
-              borderRadius: "7px",
-              padding: "8px 12px",
-              fontSize: "11px",
-              fontWeight: 600,
-              cursor: "pointer",
-              whiteSpace: "nowrap",
-            }}
-          >
-            Bulk Import
-          </button>
-        </div>
+          <div style={{ marginLeft: "auto", display: "flex", gap: "6px" }}>
+            <button
+              onClick={() => setShowImportModal(true)}
+              style={{
+                border: "1px solid #dfe2e7",
+                background: "#ffffff",
+                color: "#555a63",
+                borderRadius: "7px",
+                padding: "8px 12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Bulk Import
+            </button>
+            {products.length > 0 && (
+              <button
+                onClick={deleteAllProducts}
+                style={{
+                  border: "1px solid #fee2e2",
+                  background: "#fff1f2",
+                  color: "#b91c1c",
+                  borderRadius: "7px",
+                  padding: "8px 12px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                title="Delete all products in this restaurant"
+              >
+                🗑 Delete All
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -919,45 +1230,130 @@ async function deleteVariant(variantId: number) {
                           </div>
 
                           <div>
-                            <div
-                              style={{
-                                fontSize:
-                                  "12px",
-                                fontWeight:
-                                  600,
-                                color:
-                                  "#30333a",
-                              }}
-                            >
-                              {
-                                product.name
-                              }
-                            </div>
+                            {(() => {
+                              const meta = parseProductMetadata(
+                                product.description,
+                                product.is_vegetarian
+                              );
+                              return (
+                                <div>
+                                  <div
+                                    style={{
+                                      fontSize: "12px",
+                                      fontWeight: 600,
+                                      color: "#30333a",
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: "6px",
+                                      flexWrap: "wrap",
+                                    }}
+                                  >
+                                    <span>{product.name}</span>
+                                    {meta.course && (
+                                      <span
+                                        style={{
+                                          fontSize: "9px",
+                                          fontWeight: 700,
+                                          background: "#f1f5f9",
+                                          color: "#475569",
+                                          padding: "1px 5px",
+                                          borderRadius: "4px",
+                                        }}
+                                      >
+                                        {meta.course}
+                                      </span>
+                                    )}
+                                    {meta.calories !== null && (
+                                      <span
+                                        style={{
+                                          fontSize: "9px",
+                                          fontWeight: 650,
+                                          background: "#fef3c7",
+                                          color: "#92400e",
+                                          padding: "1px 5px",
+                                          borderRadius: "4px",
+                                        }}
+                                      >
+                                        🔥 {meta.calories} kcal
+                                      </span>
+                                    )}
+                                    {meta.spiceLevel && (
+                                      <span
+                                        style={{
+                                          fontSize: "9px",
+                                          fontWeight: 650,
+                                          background: "#fee2e2",
+                                          color: "#991b1b",
+                                          padding: "1px 5px",
+                                          borderRadius: "4px",
+                                        }}
+                                      >
+                                        🌶 {meta.spiceLevel}
+                                      </span>
+                                    )}
+                                  </div>
 
-                            {product.description && (
-                              <div
-                                style={{
-                                  marginTop:
-                                    "3px",
-                                  maxWidth:
-                                    "280px",
-                                  overflow:
-                                    "hidden",
-                                  textOverflow:
-                                    "ellipsis",
-                                  whiteSpace:
-                                    "nowrap",
-                                  fontSize:
-                                    "10px",
-                                  color:
-                                    "#858a94",
-                                }}
-                              >
-                                {
-                                  product.description
-                                }
-                              </div>
-                            )}
+                                  {meta.cleanDescription && (
+                                    <div
+                                      style={{
+                                        marginTop: "3px",
+                                        maxWidth: "280px",
+                                        overflow: "hidden",
+                                        textOverflow: "ellipsis",
+                                        whiteSpace: "nowrap",
+                                        fontSize: "10px",
+                                        color: "#858a94",
+                                      }}
+                                    >
+                                      {meta.cleanDescription}
+                                    </div>
+                                  )}
+
+                                  {(meta.nutritionTags.length > 0 ||
+                                    meta.allergens) && (
+                                      <div
+                                        style={{
+                                          marginTop: "4px",
+                                          display: "flex",
+                                          alignItems: "center",
+                                          gap: "4px",
+                                          flexWrap: "wrap",
+                                        }}
+                                      >
+                                        {meta.nutritionTags.map((t, idx) => (
+                                          <span
+                                            key={idx}
+                                            style={{
+                                              fontSize: "9px",
+                                              background: "#f0fdf4",
+                                              color: "#166534",
+                                              padding: "1px 4px",
+                                              borderRadius: "3px",
+                                              border: "1px solid #bbf7d0",
+                                            }}
+                                          >
+                                            {t}
+                                          </span>
+                                        ))}
+                                        {meta.allergens && (
+                                          <span
+                                            style={{
+                                              fontSize: "9px",
+                                              background: "#fffbeb",
+                                              color: "#b45309",
+                                              padding: "1px 4px",
+                                              borderRadius: "3px",
+                                              border: "1px solid #fde68a",
+                                            }}
+                                          >
+                                            ⚠️ {meta.allergens}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         </div>
                       </td>
@@ -991,7 +1387,8 @@ async function deleteVariant(variantId: number) {
                         {formatCurrency(
                           Number(
                             product.price
-                          )
+                          ),
+                          currency
                         )}
                       </td>
 
@@ -1040,36 +1437,36 @@ async function deleteVariant(variantId: number) {
                         }}
                       >
                         {canManageMenu ? (
-                        <button
-                          onClick={() =>
-                            toggleAvailability(product)
-                          }
-                          style={{
-                            border: "none",
-                            background:
-                              product.is_available
-                                ? "#ecfdf3"
-                                : "#f3f4f6",
-                            color:
-                              product.is_available
-                                ? "#15803d"
-                                : "#6b7280",
-                            borderRadius:
-                              "999px",
-                            padding:
-                              "5px 9px",
-                            fontSize:
-                              "10px",
-                            fontWeight:
-                              650,
-                            cursor:
-                              "pointer",
-                          }}
-                        >
-                          {product.is_available
-                            ? "Available"
-                            : "Unavailable"}
-                        </button>
+                          <button
+                            onClick={() =>
+                              toggleAvailability(product)
+                            }
+                            style={{
+                              border: "none",
+                              background:
+                                product.is_available
+                                  ? "#ecfdf3"
+                                  : "#f3f4f6",
+                              color:
+                                product.is_available
+                                  ? "#15803d"
+                                  : "#6b7280",
+                              borderRadius:
+                                "999px",
+                              padding:
+                                "5px 9px",
+                              fontSize:
+                                "10px",
+                              fontWeight:
+                                650,
+                              cursor:
+                                "pointer",
+                            }}
+                          >
+                            {product.is_available
+                              ? "Available"
+                              : "Unavailable"}
+                          </button>
                         ) : (
                           <span
                             style={{
@@ -1096,74 +1493,91 @@ async function deleteVariant(variantId: number) {
                         }}
                       >
                         {canManageMenu ? (
-                        <div
-                          style={{
-                            display: "flex",
-                            gap: "7px",
-                          }}
-                        >
-                          <button
-                            onClick={() => {
-                              setEditingProduct(
-                                product
-                              );
-                              setShowProductModal(
-                                true
-                              );
-                            }}
+                          <div
                             style={{
-                              border:
-                                "1px solid #dfe2e7",
-                              background:
-                                "#ffffff",
-                              color:
-                                "#44474e",
-                              borderRadius:
-                                "7px",
-                              padding:
-                                "7px 10px",
-                              fontSize:
-                                "10px",
-                              fontWeight:
-                                600,
-                              cursor:
-                                "pointer",
+                              display: "flex",
+                              gap: "7px",
                             }}
                           >
-                            Edit
-                          </button>
+                            <button
+                              onClick={() => {
+                                setEditingProduct(
+                                  product
+                                );
+                                setShowProductModal(
+                                  true
+                                );
+                              }}
+                              style={{
+                                border:
+                                  "1px solid #dfe2e7",
+                                background:
+                                  "#ffffff",
+                                color:
+                                  "#44474e",
+                                borderRadius:
+                                  "7px",
+                                padding:
+                                  "7px 10px",
+                                fontSize:
+                                  "10px",
+                                fontWeight:
+                                  600,
+                                cursor:
+                                  "pointer",
+                              }}
+                            >
+                              Edit
+                            </button>
 
-                          <button
-                            onClick={() => {
-                              setSelectedProduct(
-                                product
-                              );
-                              loadVariants(
-                                product.id
-                              );
-                            }}
-                            style={{
-                              border:
-                                "1px solid #dfe2e7",
-                              background:
-                                "#ffffff",
-                              color:
-                                "#44474e",
-                              borderRadius:
-                                "7px",
-                              padding:
-                                "7px 10px",
-                              fontSize:
-                                "10px",
-                              fontWeight:
-                                600,
-                              cursor:
-                                "pointer",
-                            }}
-                          >
-                            Variants
-                          </button>
-                        </div>
+                            <button
+                              onClick={() => {
+                                setSelectedProduct(
+                                  product
+                                );
+                                loadVariants(
+                                  product.id
+                                );
+                              }}
+                              style={{
+                                border:
+                                  "1px solid #dfe2e7",
+                                background:
+                                  "#ffffff",
+                                color:
+                                  "#44474e",
+                                borderRadius:
+                                  "7px",
+                                padding:
+                                  "7px 10px",
+                                fontSize:
+                                  "10px",
+                                fontWeight:
+                                  600,
+                                cursor:
+                                  "pointer",
+                              }}
+                            >
+                              Variants
+                            </button>
+
+                            <button
+                              onClick={() => deleteProduct(product)}
+                              style={{
+                                border: "1px solid #fee2e2",
+                                background: "#fff1f2",
+                                color: "#b91c1c",
+                                borderRadius: "7px",
+                                padding: "7px 10px",
+                                fontSize: "10px",
+                                fontWeight: 600,
+                                cursor: "pointer",
+                              }}
+                              title="Delete this product"
+                            >
+                              Delete
+                            </button>
+                          </div>
                         ) : (
                           <span style={{ fontSize: "11px", color: "#9a9da4" }}>View only</span>
                         )}
@@ -1225,6 +1639,7 @@ async function deleteVariant(variantId: number) {
           categories={categories}
           restaurantId={restaurantId}
           existingProducts={products}
+          currency={currency}
           onClose={() =>
             setShowImportModal(false)
           }
@@ -1339,106 +1754,107 @@ function ProductModal({
     is_available: boolean;
   }) => Promise<void>;
 }) {
-  const [name, setName] = useState(
-    product?.name || ""
+  const meta = parseProductMetadata(
+    product?.description,
+    product?.is_vegetarian ?? false
   );
 
-  const [description, setDescription] =
-    useState(product?.description || "");
-
-  const [categoryId, setCategoryId] =
-    useState(
-      product?.category_id?.toString() ||
-        categories[0]?.id?.toString() ||
-        ""
-    );
-
-  const [price, setPrice] = useState(
-    product?.price?.toString() || ""
+  const [name, setName] = useState(product?.name || "");
+  const [description, setDescription] = useState(meta.cleanDescription);
+  const [calories, setCalories] = useState(
+    meta.calories ? String(meta.calories) : ""
+  );
+  const [spiceLevel, setSpiceLevel] = useState(meta.spiceLevel || "");
+  const [course, setCourse] = useState(meta.course || "");
+  const [nutritionTags, setNutritionTags] = useState(
+    meta.nutritionTags.join("; ")
+  );
+  const [allergens, setAllergens] = useState(meta.allergens || "");
+  const [searchKeywords, setSearchKeywords] = useState(
+    meta.searchKeywords || ""
+  );
+  const [customization, setCustomization] = useState(
+    meta.customization || ""
   );
 
-  const [mrp, setMrp] = useState(
-    product?.mrp?.toString() || ""
+  const [categoryId, setCategoryId] = useState(
+    product?.category_id?.toString() ||
+    categories[0]?.id?.toString() ||
+    ""
   );
 
-  const [imageUrl, setImageUrl] =
-    useState(product?.image_url || "");
-
-  const [foodType, setFoodType] = useState<
-    "VEG" | "NON_VEG"
-  >(
-    product?.is_vegetarian
-      ? "VEG"
-      : "NON_VEG"
+  const [price, setPrice] = useState(product?.price?.toString() || "");
+  const [mrp, setMrp] = useState(product?.mrp?.toString() || "");
+  const [imageUrl, setImageUrl] = useState(product?.image_url || "");
+  const [foodType, setFoodType] = useState<"VEG" | "NON_VEG" | "EGG">(
+    meta.dietType === "egg"
+      ? "EGG"
+      : meta.dietType === "veg"
+        ? "VEG"
+        : "NON_VEG"
   );
+  const [available, setAvailable] = useState(product?.is_available ?? true);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
 
-  const [available, setAvailable] =
-    useState(product?.is_available ?? true);
+  async function handleImageUpload(file: File) {
+    setUploading(true);
+    setUploadError("");
 
-  const [uploading, setUploading] =
-    useState(false);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
 
-  const [uploadError, setUploadError] =
-    useState("");
-
-  
-async function handleImageUpload(file: File) {
-  setUploading(true);
-  setUploadError("");
-
-  try {
-    const formData = new FormData();
-    formData.append("file", file);
-
-    const response = await fetch(
-      "/api/restaurant/menu/products/image/upload",
-      {
-        method: "POST",
-        body: formData,
-      }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        result.error || "Image upload failed."
+      const response = await fetch(
+        "/api/restaurant/menu/products/image/upload",
+        {
+          method: "POST",
+          body: formData,
+        }
       );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Image upload failed.");
+      }
+
+      setImageUrl(result.image_url);
+    } catch (error) {
+      console.error("Product image upload failed:", error);
+      setUploadError(
+        error instanceof Error ? error.message : "Image upload failed."
+      );
+    } finally {
+      setUploading(false);
     }
-
-    setImageUrl(result.image_url);
-  } catch (error) {
-    console.error("Product image upload failed:", error);
-
-    setUploadError(
-      error instanceof Error
-        ? error.message
-        : "Image upload failed."
-    );
-  } finally {
-    setUploading(false);
   }
-}
-
 
   async function handleSave() {
-    if (
-      !name.trim() ||
-      !categoryId ||
-      !price
-    ) {
+    if (!name.trim() || !categoryId || !price) {
       return;
     }
 
+    const finalDescription = buildProductDescription({
+      description,
+      calories,
+      spiceLevel,
+      nutritionTags,
+      allergens,
+      course,
+      searchKeywords,
+      customization,
+      dietType: foodType,
+    });
+
     await onSave({
       name,
-      description,
+      description: finalDescription,
       category_id: Number(categoryId),
       price: Number(price),
       mrp: mrp ? Number(mrp) : null,
       image_url: imageUrl,
-      is_vegetarian:
-        foodType === "VEG",
+      is_vegetarian: foodType === "VEG",
       is_available: available,
     });
   }
@@ -1517,12 +1933,12 @@ async function handleImageUpload(file: File) {
           />
         </Field>
 
-        {/* PRICE */}
+        {/* PRICE, MRP, & CALORIES */}
         <div
           style={{
             display: "grid",
             gridTemplateColumns:
-              "1fr 1fr",
+              "1fr 1fr 1fr",
             gap: "12px",
           }}
         >
@@ -1549,7 +1965,98 @@ async function handleImageUpload(file: File) {
               style={inputStyle}
             />
           </Field>
+
+          <Field label="Calories (kcal)">
+            <input
+              type="number"
+              value={calories}
+              onChange={(event) =>
+                setCalories(event.target.value)
+              }
+              placeholder="e.g. 380"
+              style={inputStyle}
+            />
+          </Field>
         </div>
+
+        {/* COURSE & SPICE LEVEL */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "12px",
+          }}
+        >
+          <Field label="Course">
+            <input
+              type="text"
+              value={course}
+              onChange={(event) => setCourse(event.target.value)}
+              placeholder="Starter / Main / Dessert / Beverage"
+              style={inputStyle}
+            />
+          </Field>
+
+          <Field label="Spice Level">
+            <input
+              type="text"
+              value={spiceLevel}
+              onChange={(event) => setSpiceLevel(event.target.value)}
+              placeholder="e.g. Medium / Mild / Hot"
+              style={inputStyle}
+            />
+          </Field>
+        </div>
+
+        {/* NUTRITION & ALLERGENS */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: "12px",
+          }}
+        >
+          <Field label="Nutrition tags (semicolon separated)">
+            <input
+              type="text"
+              value={nutritionTags}
+              onChange={(event) => setNutritionTags(event.target.value)}
+              placeholder="High protein; Fried / crispy"
+              style={inputStyle}
+            />
+          </Field>
+
+          <Field label="Contains / Allergens">
+            <input
+              type="text"
+              value={allergens}
+              onChange={(event) => setAllergens(event.target.value)}
+              placeholder="e.g. nuts, dairy, gluten"
+              style={inputStyle}
+            />
+          </Field>
+        </div>
+
+        {/* SEARCH KEYWORDS & CUSTOMIZATION */}
+        <Field label="Search Keywords (for chatbot & search)">
+          <input
+            type="text"
+            value={searchKeywords}
+            onChange={(event) => setSearchKeywords(event.target.value)}
+            placeholder="non-vegetarian, moderately spicy, kids friendly"
+            style={inputStyle}
+          />
+        </Field>
+
+        <Field label="Customization / Order sizes note">
+          <input
+            type="text"
+            value={customization}
+            onChange={(event) => setCustomization(event.target.value)}
+            placeholder="e.g. No options: order as listed"
+            style={inputStyle}
+          />
+        </Field>
 
         {/* IMAGE UPLOAD */}
         <Field label="Product image">
@@ -1624,8 +2131,8 @@ async function handleImageUpload(file: File) {
                   {uploading
                     ? "Uploading..."
                     : imageUrl
-                    ? "Change Image"
-                    : "Upload Image"}
+                      ? "Change Image"
+                      : "Upload Image"}
 
                   <input
                     type="file"
@@ -1764,7 +2271,49 @@ async function handleImageUpload(file: File) {
                 }}
               />
 
-              Non-Vegetarian
+              Non-Veg
+            </button>
+
+            {/* EGG (YELLOW) */}
+            <button
+              type="button"
+              onClick={() =>
+                setFoodType("EGG")
+              }
+              style={{
+                flex: 1,
+                border:
+                  foodType === "EGG"
+                    ? "1px solid #ca8a04"
+                    : "1px solid #dfe2e7",
+                background:
+                  foodType === "EGG"
+                    ? "#fef9c3"
+                    : "#ffffff",
+                color:
+                  foodType === "EGG"
+                    ? "#854d0e"
+                    : "#555a63",
+                borderRadius: "8px",
+                padding: "10px",
+                fontSize: "11px",
+                fontWeight: 650,
+                cursor: "pointer",
+              }}
+            >
+              <span
+                style={{
+                  display:
+                    "inline-block",
+                  width: "9px",
+                  height: "9px",
+                  borderRadius: "50%",
+                  background: "#eab308",
+                  marginRight: "7px",
+                }}
+              />
+
+              Contains Egg
             </button>
           </div>
         </Field>
@@ -1832,64 +2381,64 @@ function VariantsModal({
   const [price, setPrice] = useState("");
   const [mrp, setMrp] = useState("");
 
-  
-async function addVariant() {
-  if (!restaurantId || !name.trim() || !price) {
-    return;
-  }
 
-  const parsedPrice = Number(price);
-  const parsedMrp = mrp.trim() ? Number(mrp) : null;
+  async function addVariant() {
+    if (!restaurantId || !name.trim() || !price) {
+      return;
+    }
 
-  if (
-    !Number.isFinite(parsedPrice) ||
-    parsedPrice < 0 ||
-    (parsedMrp !== null &&
-      (!Number.isFinite(parsedMrp) || parsedMrp < 0))
-  ) {
-    return;
-  }
+    const parsedPrice = Number(price);
+    const parsedMrp = mrp.trim() ? Number(mrp) : null;
 
-  try {
-    const response = await fetch(
-      "/api/restaurant/menu/variants",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          product_id: product.id,
-          name: name.trim(),
-          price: parsedPrice,
-          mrp: parsedMrp,
-        }),
+    if (
+      !Number.isFinite(parsedPrice) ||
+      parsedPrice < 0 ||
+      (parsedMrp !== null &&
+        (!Number.isFinite(parsedMrp) || parsedMrp < 0))
+    ) {
+      return;
+    }
+
+    try {
+      const response = await fetch(
+        "/api/restaurant/menu/variants",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            product_id: product.id,
+            name: name.trim(),
+            price: parsedPrice,
+            mrp: parsedMrp,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error("Add variant failed:", {
+          status: response.status,
+          error: result.error,
+          details: result,
+        });
+
+        alert(result.error || "Failed to add variant.");
+        return;
       }
-    );
 
-    const result = await response.json();
+      setName("");
+      setPrice("");
+      setMrp("");
+      setShowAdd(false);
 
-   if (!response.ok) {
-  console.error("Add variant failed:", {
-    status: response.status,
-    error: result.error,
-    details: result,
-  });
-
-  alert(result.error || "Failed to add variant.");
-  return;
-}
-
-    setName("");
-    setPrice("");
-    setMrp("");
-    setShowAdd(false);
-
-    await onReload();
-  } catch (error) {
-    console.error("Add variant error:", error);
+      await onReload();
+    } catch (error) {
+      console.error("Add variant error:", error);
+    }
   }
-}
 
 
   return (
@@ -2069,12 +2618,14 @@ function BulkImportModal({
   categories,
   restaurantId,
   existingProducts,
+  currency = "INR",
   onClose,
   onComplete,
 }: {
   categories: Category[];
   restaurantId: number | null;
   existingProducts: Product[];
+  currency?: string;
   onClose: () => void;
   onComplete: () => Promise<void>;
 }) {
@@ -2156,7 +2707,7 @@ function BulkImportModal({
             (product) =>
               product.is_active &&
               slugify(product.name) ===
-                normalizedFile
+              normalizedFile
           ) || null;
 
         return {
@@ -2185,370 +2736,506 @@ function BulkImportModal({
      IMAGE ONLY — UPLOAD
   ============================================================ */
 
- 
-async function uploadImagesOnly() {
-  if (!restaurantId || !imageZip) {
-    setMessage("Restaurant or image ZIP is missing.");
-    return;
-  }
 
-  const matchedRows = imageRows.filter(
-    (row) => row.matchedProduct !== null
-  );
-
-  if (matchedRows.length === 0) {
-    setMessage("No images could be matched to existing products.");
-    return;
-  }
-
-  setStep("ADDING");
-  setMessage("");
-
-  try {
-    const zip = await JSZip.loadAsync(
-      await imageZip.arrayBuffer()
-    );
-
-    let uploaded = 0;
-    let failed = 0;
-
-    for (const row of matchedRows) {
-      const product = row.matchedProduct;
-
-      if (!product) continue;
-
-      const zipFile = Object.values(zip.files).find((item) => {
-        const name = item.name.split("/").pop()?.trim() || "";
-        return !item.dir && name === row.fileName;
-      });
-
-      if (!zipFile) {
-        failed++;
-        continue;
-      }
-
-      const imageBlob = await zipFile.async("blob");
-      const extension =
-        row.fileName.split(".").pop()?.toLowerCase() || "";
-
-      const mimeType =
-        extension === "jpg" || extension === "jpeg"
-          ? "image/jpeg"
-          : extension === "png"
-            ? "image/png"
-            : extension === "webp"
-              ? "image/webp"
-              : "";
-
-      if (!mimeType) {
-        failed++;
-        continue;
-      }
-
-      const formData = new FormData();
-
-      formData.append(
-        "file",
-        new File([imageBlob], row.fileName, {
-          type: mimeType,
-        })
-      );
-
-      // Upload through the authenticated server endpoint.
-      const uploadResponse = await fetch(
-        `/api/restaurant/menu/products/${product.id}/image/upload`,
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
-
-      const uploadResult = await uploadResponse.json();
-
-      if (!uploadResponse.ok) {
-        console.error(
-          `Upload failed for ${product.name}:`,
-          uploadResult.error
-        );
-        failed++;
-        continue;
-      }
-
-      // Save the URL through the existing protected update endpoint.
-      const updateResponse = await fetch(
-        `/api/restaurant/menu/products/${product.id}/image`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            image_url: uploadResult.image_url,
-          }),
-        }
-      );
-
-      const updateResult = await updateResponse.json();
-
-      if (!updateResponse.ok) {
-        console.error(
-          `Image URL update failed for ${product.name}:`,
-          updateResult.error
-        );
-        failed++;
-        continue;
-      }
-
-      uploaded++;
-    }
-
-    if (uploaded === 0) {
-      setMessage(
-        failed > 0
-          ? `No images uploaded successfully. ${failed} failed.`
-          : "No images were uploaded."
-      );
-      setStep("IMAGE_REVIEW");
+  async function uploadImagesOnly() {
+    if (!restaurantId || !imageZip) {
+      setMessage("Restaurant or image ZIP is missing.");
       return;
     }
 
-    setMessage(
-      `${uploaded} image${uploaded === 1 ? "" : "s"} uploaded successfully.` +
+    const matchedRows = imageRows.filter(
+      (row) => row.matchedProduct !== null
+    );
+
+    if (matchedRows.length === 0) {
+      setMessage("No images could be matched to existing products.");
+      return;
+    }
+
+    setStep("ADDING");
+    setMessage("");
+
+    try {
+      const zip = await JSZip.loadAsync(
+        await imageZip.arrayBuffer()
+      );
+
+      let uploaded = 0;
+      let failed = 0;
+
+      for (const row of matchedRows) {
+        const product = row.matchedProduct;
+
+        if (!product) continue;
+
+        const zipFile = Object.values(zip.files).find((item) => {
+          const name = item.name.split("/").pop()?.trim() || "";
+          return !item.dir && name === row.fileName;
+        });
+
+        if (!zipFile) {
+          failed++;
+          continue;
+        }
+
+        const imageBlob = await zipFile.async("blob");
+        const extension =
+          row.fileName.split(".").pop()?.toLowerCase() || "";
+
+        const mimeType =
+          extension === "jpg" || extension === "jpeg"
+            ? "image/jpeg"
+            : extension === "png"
+              ? "image/png"
+              : extension === "webp"
+                ? "image/webp"
+                : "";
+
+        if (!mimeType) {
+          failed++;
+          continue;
+        }
+
+        const formData = new FormData();
+
+        formData.append(
+          "file",
+          new File([imageBlob], row.fileName, {
+            type: mimeType,
+          })
+        );
+
+        // Upload through the authenticated server endpoint.
+        const uploadResponse = await fetch(
+          `/api/restaurant/menu/products/${product.id}/image/upload`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+
+        const uploadResult = await uploadResponse.json();
+
+        if (!uploadResponse.ok) {
+          console.error(
+            `Upload failed for ${product.name}:`,
+            uploadResult.error
+          );
+          failed++;
+          continue;
+        }
+
+        // Save the URL through the existing protected update endpoint.
+        const updateResponse = await fetch(
+          `/api/restaurant/menu/products/${product.id}/image`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              image_url: uploadResult.image_url,
+            }),
+          }
+        );
+
+        const updateResult = await updateResponse.json();
+
+        if (!updateResponse.ok) {
+          console.error(
+            `Image URL update failed for ${product.name}:`,
+            updateResult.error
+          );
+          failed++;
+          continue;
+        }
+
+        uploaded++;
+      }
+
+      if (uploaded === 0) {
+        setMessage(
+          failed > 0
+            ? `No images uploaded successfully. ${failed} failed.`
+            : "No images were uploaded."
+        );
+        setStep("IMAGE_REVIEW");
+        return;
+      }
+
+      setMessage(
+        `${uploaded} image${uploaded === 1 ? "" : "s"} uploaded successfully.` +
         (failed > 0 ? ` ${failed} failed.` : "")
-    );
+      );
 
-    setStep("DONE");
-    await onComplete();
-  } catch (error) {
-    console.error("Image upload failed:", error);
+      setStep("DONE");
+      await onComplete();
+    } catch (error) {
+      console.error("Image upload failed:", error);
 
-    setMessage(
-      error instanceof Error
-        ? error.message
-        : "Image upload failed."
-    );
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Image upload failed."
+      );
 
-    setStep("IMAGE_REVIEW");
+      setStep("IMAGE_REVIEW");
+    }
   }
-}
 
 
   /* ============================================================
      TEMPLATE
   ============================================================ */
-
   function downloadTemplate() {
+    const symbol = getCurrencySymbol(currency);
     const templateData = [
       {
-        name: "Chicken Biryani",
-        description:
-          "Chicken biryani with basmati rice",
-        category: "Main Course",
-        price: 280,
-        mrp: 320,
-        vegetarian: false,
-        available: true,
-        image: "chicken-biryani.jpg",
+        Dish: "Madhurai Chicken Pakoda (Bonein)",
+        [`Price (${currency})`]: `${symbol}18.00`,
+        "Image file": "chicken-pakoda.jpg",
+        "Estimated calories (kcal)": 380,
+        Description: "Crunchy, golden, spicy chickpea-batter fritters.",
+        "Customization & order sizes (required / optional, extra cost)":
+          "No options: order as listed",
+        Diet: "Non-vegetarian",
+        "Spice level": "Medium",
+        "Nutrition tags": "High protein; Fried / crispy",
+        "Contains / allergens": "nuts",
+        Course: "Starter",
+        "Search keywords (for a chatbot)":
+          "non-vegetarian, medium spicy, moderately spicy, high protein, fried / crispy, starter, contains nuts, chicken, kids friendly",
+        Section: "Appetizers - Non Vegetarian",
+      },
+      {
+        Dish: "Paneer Tikka Shashlik",
+        [`Price (${currency})`]: `${symbol}15.00`,
+        "Image file": "paneer-tikka.jpg",
+        "Estimated calories (kcal)": 310,
+        Description: "Smoky tandoor-roasted cottage cheese cubes with bell peppers.",
+        "Customization & order sizes (required / optional, extra cost)":
+          "Optional mint chutney on side",
+        Diet: "Vegetarian",
+        "Spice level": "Mild",
+        "Nutrition tags": "High protein; Gluten free",
+        "Contains / allergens": "dairy",
+        Course: "Starter",
+        "Search keywords (for a chatbot)":
+          "vegetarian, mild, paneer, healthy, cottage cheese, starter",
+        Section: "Appetizers - Vegetarian",
       },
     ];
 
-    const worksheet =
-      XLSX.utils.json_to_sheet(
-        templateData
-      );
+    const worksheet = XLSX.utils.json_to_sheet(templateData);
 
     worksheet["!cols"] = [
-      { wch: 24 },
-      { wch: 42 },
-      { wch: 20 },
-      { wch: 12 },
-      { wch: 12 },
+      { wch: 30 },
+      { wch: 16 },
+      { wch: 22 },
+      { wch: 22 },
+      { wch: 45 },
+      { wch: 35 },
+      { wch: 16 },
       { wch: 14 },
-      { wch: 14 },
+      { wch: 28 },
+      { wch: 22 },
+      { wch: 16 },
+      { wch: 40 },
       { wch: 28 },
     ];
 
-    const workbook =
-      XLSX.utils.book_new();
-
-    XLSX.utils.book_append_sheet(
-      workbook,
-      worksheet,
-      "Products"
-    );
-
-    XLSX.writeFile(
-      workbook,
-      "menu-import-template.xlsx"
-    );
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Products");
+    XLSX.writeFile(workbook, "menu-import-template.xlsx");
   }
 
   /* ============================================================
      PARSE CSV / XLSX
   ============================================================ */
 
-  async function parseImportFile(
-    selectedFile: File
-  ) {
-    const buffer =
-      await selectedFile.arrayBuffer();
+  async function parseImportFile(selectedFile: File) {
+    const buffer = await selectedFile.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      defval: "",
+    });
 
-    const workbook = XLSX.read(
-      buffer,
-      {
-        type: "array",
-      }
+    const existingNames = new Set(
+      existingProducts.map((product) => product.name.trim().toLowerCase())
     );
 
-    const sheet =
-      workbook.Sheets[
-        workbook.SheetNames[0]
-      ];
+    const parsed: ImportRow[] = data.map((row) => {
+      // 1. Dish / Product Name
+      const name = String(
+        row.Dish ||
+        row.dish ||
+        row["Dish Name"] ||
+        row["dish name"] ||
+        row.name ||
+        row.Name ||
+        row.product ||
+        row.Product ||
+        ""
+      ).trim();
 
-    const data =
-      XLSX.utils.sheet_to_json<
-        Record<string, unknown>
-      >(sheet, {
-        defval: "",
-      });
+      // 2. Section / Category Name
+      const rawCategory =
+        row.Section ||
+        row.section ||
+        row.category ||
+        row.Category ||
+        row["Category Name"] ||
+        row["category name"] ||
+        "";
 
-    const existingNames =
-      new Set(
-        existingProducts.map(
-          (product) =>
-            product.name
-              .trim()
-              .toLowerCase()
-        )
+      const category = String(rawCategory)
+        .normalize("NFKC")
+        .replace(/\u00a0/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      // 3. Price (cleans currency symbols like $, ₹, €, £, etc.)
+      const priceKey = Object.keys(row).find((k) =>
+        /^(price|cost|rate)\b/i.test(k.trim()) || /price/i.test(k)
+      );
+      const rawPriceVal = priceKey ? row[priceKey] : (row.price || row.Price || 0);
+
+      const price =
+        typeof rawPriceVal === "number"
+          ? rawPriceVal
+          : parseFloat(String(rawPriceVal).replace(/[^\d.-]/g, "")) || 0;
+
+      // 4. MRP
+      const rawMrpVal =
+        row.mrp ||
+        row.MRP ||
+        row["Original Price"] ||
+        row["original price"] ||
+        "";
+      const mrp = rawMrpVal
+        ? typeof rawMrpVal === "number"
+          ? rawMrpVal
+          : parseFloat(String(rawMrpVal).replace(/[^\d.-]/g, "")) || null
+        : null;
+
+      // 5. Estimated Calories
+      const rawCalVal =
+        row["Estimated calories (kcal)"] ||
+        row["Estimated Calories (kcal)"] ||
+        row["Estimated calories"] ||
+        row["Calories (kcal)"] ||
+        row["calories (kcal)"] ||
+        row.calories ||
+        row.Calories ||
+        row.cal ||
+        row.Cal ||
+        "";
+      const calories = rawCalVal
+        ? parseInt(String(rawCalVal).replace(/\D/g, ""), 10) || null
+        : null;
+
+      // 6. Raw Description
+      const rawDescription = String(
+        row.Description || row.description || row.Desc || row.desc || ""
+      ).trim();
+
+      // 7. Diet Type & Vegetarian Flag
+      const rawDiet = String(
+        row.Diet ||
+        row.diet ||
+        row.Dietary ||
+        row.dietary ||
+        row["Food Type"] ||
+        row["food type"] ||
+        row.vegetarian ||
+        row.Vegetarian ||
+        row.is_vegetarian ||
+        ""
+      ).toLowerCase();
+
+      let dietType: "veg" | "non-veg" | "egg" = "non-veg";
+      let vegetarian = false;
+
+      if (
+        rawDiet.includes("non-veg") ||
+        rawDiet.includes("non veg") ||
+        rawDiet.includes("nonveg") ||
+        rawDiet.includes("meat") ||
+        rawDiet.includes("chicken") ||
+        rawDiet.includes("fish") ||
+        rawDiet.includes("mutton")
+      ) {
+        vegetarian = false;
+        dietType = "non-veg";
+      } else if (rawDiet.includes("egg")) {
+        vegetarian = false;
+        dietType = "egg";
+      } else if (
+        rawDiet.includes("veg") ||
+        rawDiet === "yes" ||
+        rawDiet === "true" ||
+        rawDiet === "1"
+      ) {
+        vegetarian = true;
+        dietType = "veg";
+      }
+
+      // 8. Spice Level
+      const rawSpice = String(
+        row["Spice level"] ||
+        row["Spice Level"] ||
+        row["spice level"] ||
+        row.Spice ||
+        row.spice ||
+        row.Spiciness ||
+        ""
+      ).trim();
+
+      // 9. Nutrition Tags
+      const rawNutrition = String(
+        row["Nutrition tags"] ||
+        row["Nutrition Tags"] ||
+        row["nutrition tags"] ||
+        row.Nutrition ||
+        row.nutrition ||
+        ""
+      ).trim();
+      const nutritionTags = rawNutrition
+        ? rawNutrition
+          .split(/[;,]/)
+          .map((t) => t.trim())
+          .filter(Boolean)
+        : [];
+
+      // 10. Contains / Allergens
+      const rawAllergensInput = String(
+        row["Contains / allergens"] ||
+        row["Contains/allergens"] ||
+        row["Contains / Allergens"] ||
+        row["contains / allergens"] ||
+        row.Allergens ||
+        row.allergens ||
+        row.Contains ||
+        row.contains ||
+        ""
+      ).trim();
+      const rawAllergens = /^(none|none\s+listed|none-listed|no|n\/a|na|nil|nothing|-)$/i.test(rawAllergensInput)
+        ? ""
+        : rawAllergensInput;
+
+      // 11. Course
+      const rawCourse = String(
+        row.Course ||
+        row.course ||
+        row["Meal Course"] ||
+        row["meal course"] ||
+        ""
+      ).trim();
+
+      // 12. Search Keywords
+      const rawKeywords = String(
+        row["Search keywords (for a chatbot)"] ||
+        row["Search keywords"] ||
+        row["Search Keywords"] ||
+        row["search keywords"] ||
+        row.Keywords ||
+        row.keywords ||
+        ""
+      ).trim();
+
+      // 13. Customization & Order sizes
+      const rawCustom = String(
+        row["Customization & order sizes (required / optional, extra cost)"] ||
+        row["Customization & order sizes"] ||
+        row.Customization ||
+        row.customization ||
+        row["Order sizes"] ||
+        ""
+      ).trim();
+
+      // Image file / Picture / Image
+      const image = String(
+        row["Image file"] ||
+        row["Image File"] ||
+        row["image file"] ||
+        row["Image file name"] ||
+        row["Image File Name"] ||
+        row["image_file"] ||
+        row["Image name"] ||
+        row["image name"] ||
+        row["Images name"] ||
+        row["images name"] ||
+        row["File name"] ||
+        row["file name"] ||
+        row["Image"] ||
+        row.image ||
+        row.Picture ||
+        row.picture ||
+        row.image_url ||
+        row.Photo ||
+        ""
+      ).trim();
+
+      // Availability
+      const rawAvailable = String(
+        row.available || row.Available || row.is_available || "true"
+      ).toLowerCase();
+      const available = !(
+        rawAvailable === "false" ||
+        rawAvailable === "no" ||
+        rawAvailable === "0"
       );
 
-    const parsed: ImportRow[] =
-      data.map((row) => {
-        const name = String(
-          row.name ||
-            row.Name ||
-            row.product ||
-            row.Product ||
-            ""
-        ).trim();
-
-        const description =
-          String(
-            row.description ||
-              row.Description ||
-              ""
-          ).trim();
-
-        const rawCategory =
-          row.category ||
-          row.Category ||
-          row["Category Name"] ||
-          row["category name"] ||
-          "";
-
-        const category =
-          String(rawCategory)
-            .normalize("NFKC")
-            .replace(
-              /\u00A0/g,
-              " "
-            )
-            .replace(
-              /\s+/g,
-              " "
-            )
-            .trim();
-
-        const price = Number(
-          row.price ||
-            row.Price ||
-            0
-        );
-
-        const rawMrp =
-          row.mrp ||
-          row.MRP ||
-          "";
-
-        const mrp = rawMrp
-          ? Number(rawMrp)
-          : null;
-
-        const rawVegetarian =
-          String(
-            row.vegetarian ||
-              row.Vegetarian ||
-              row.is_vegetarian ||
-              ""
-          ).toLowerCase();
-
-        const vegetarian =
-          rawVegetarian === "true" ||
-          rawVegetarian === "yes" ||
-          rawVegetarian === "1";
-
-        const rawAvailable =
-          String(
-            row.available ||
-              row.Available ||
-              row.is_available ||
-              "true"
-          ).toLowerCase();
-
-        const available =
-          !(
-            rawAvailable ===
-              "false" ||
-            rawAvailable ===
-              "no" ||
-            rawAvailable === "0"
-          );
-
-        const image = String(
-          row.image ||
-            row.image_url ||
-            row.Image ||
-            ""
-        ).trim();
-
-        let error = "";
-
-        if (!name) {
-          error =
-            "Product name is required.";
-        } else if (!category) {
-          error =
-            "Category is required.";
-        } else if (
-          !price ||
-          price <= 0
-        ) {
-          error =
-            "Valid price is required.";
-        } else if (
-          duplicateAction ===
-            "SKIP" &&
-          existingNames.has(
-            name.toLowerCase()
-          )
-        ) {
-          error =
-            "Product already exists.";
-        }
-
-        return {
-          name,
-          description,
-          category,
-          price,
-          mrp,
-          vegetarian,
-          available,
-          image,
-          valid: !error,
-          error,
-        };
+      // Build composite description with all metadata tags
+      const descriptionWithDetails = buildProductDescription({
+        description: rawDescription,
+        calories,
+        spiceLevel: rawSpice,
+        nutritionTags: rawNutrition,
+        allergens: rawAllergens,
+        course: rawCourse,
+        searchKeywords: rawKeywords,
+        customization: rawCustom,
+        dietType,
       });
+
+      let error = "";
+      if (!name) {
+        error = "Product name is required.";
+      } else if (!category) {
+        error = "Section / Category is required.";
+      } else if (!price || price <= 0) {
+        error = "Valid price is required.";
+      } else if (
+        duplicateAction === "SKIP" &&
+        existingNames.has(name.toLowerCase())
+      ) {
+        error = "Product already exists.";
+      }
+
+      return {
+        name,
+        description: descriptionWithDetails,
+        cleanDescription: rawDescription,
+        category,
+        price,
+        mrp,
+        vegetarian,
+        dietType,
+        available,
+        image,
+        calories,
+        spiceLevel: rawSpice || null,
+        nutritionTags,
+        allergens: rawAllergens || null,
+        course: rawCourse || null,
+        searchKeywords: rawKeywords || null,
+        customization: rawCustom || null,
+        valid: !error,
+        error,
+      };
+    });
 
     setRows(parsed);
     setStep("REVIEW");
@@ -2571,149 +3258,172 @@ async function uploadImagesOnly() {
      ADD PRODUCTS TO MENU
   ============================================================ */
 
-  
-async function addToMenu() {
-  if (!restaurantId) {
-    setMessage("Restaurant could not be found.");
-    return;
-  }
 
-  
-
-  const validRows = rows.filter((row) => row.valid);
-
-  if (validRows.length === 0) {
-    setMessage("There are no valid products to add.");
-    return;
-  }
-
-  setStep("ADDING");
-  setMessage("");
-
-  try {
-    const imageMap = new Map<string, string>();
-
-    // Preserve the existing optional ZIP image-upload workflow.
-    if (imageZip) {
-      const zip = await JSZip.loadAsync(
-        await imageZip.arrayBuffer()
-      );
-
-      const imageFiles = Object.values(zip.files).filter(
-        (zipFile) =>
-          !zipFile.dir &&
-          /\.(jpg|jpeg|png|webp)$/i.test(zipFile.name)
-      );
-
-
-      for (const imageFile of imageFiles) {
-        const originalName =
-          imageFile.name.split("/").pop()?.trim() || "";
-
-        const extension =
-          originalName.split(".").pop()?.toLowerCase() || "jpg";
-
-        const storagePath =
-  `restaurants/${restaurantId}/products/${crypto.randomUUID()}.${extension}`;
-
-        const imageBlob = await imageFile.async("blob");
-
-        const contentType =
-          extension === "jpg" || extension === "jpeg"
-            ? "image/jpeg"
-            : extension === "png"
-              ? "image/png"
-              : "image/webp";
-
-        
-const formData = new FormData();
-
-formData.append(
-  "file",
-  new File([imageBlob], originalName, {
-    type: contentType,
-  })
-);
-
-const response = await fetch(
-  "/api/restaurant/menu/bulk-import/images",
-  {
-    method: "POST",
-    body: formData,
-  }
-);
-
-const result = await response.json();
-
-if (!response.ok) {
-  throw new Error(
-    result.error || `Failed to upload ${originalName}`
-  );
-}
-
-imageMap.set(
-  originalName.toLowerCase(),
-  result.image_url
-);
-      }
+  async function addToMenu() {
+    if (!restaurantId) {
+      setMessage("Restaurant could not be found.");
+      return;
     }
 
-    const products = validRows.map((row) => {
-      const imageFileName = row.image
-        .split("/")
-        .pop()
-        ?.trim()
-        .toLowerCase() || "";
 
-      return {
-        name: row.name,
-        description: row.description,
-        category: row.category,
-        price: row.price,
-        mrp: row.mrp,
-        vegetarian: row.vegetarian,
-        available: row.available,
-        imageUrl: imageZip
-          ? imageMap.get(imageFileName) ?? null
-          : null,
+
+    const validRows = rows.filter((row) => row.valid);
+
+    if (validRows.length === 0) {
+      setMessage("There are no valid products to add.");
+      return;
+    }
+
+    setStep("ADDING");
+    setMessage("");
+
+    try {
+      const imageMap = new Map<string, string>();
+
+      // Preserve the existing optional ZIP image-upload workflow.
+      if (imageZip) {
+        const zip = await JSZip.loadAsync(
+          await imageZip.arrayBuffer()
+        );
+
+        const imageFiles = Object.values(zip.files).filter(
+          (zipFile) =>
+            !zipFile.dir &&
+            /\.(jpg|jpeg|png|webp)$/i.test(zipFile.name)
+        );
+
+
+        for (const imageFile of imageFiles) {
+          const originalName =
+            imageFile.name.split("/").pop()?.trim() || "";
+
+          const extension =
+            originalName.split(".").pop()?.toLowerCase() || "jpg";
+
+          const storagePath =
+            `restaurants/${restaurantId}/products/${crypto.randomUUID()}.${extension}`;
+
+          const imageBlob = await imageFile.async("blob");
+
+          const contentType =
+            extension === "jpg" || extension === "jpeg"
+              ? "image/jpeg"
+              : extension === "png"
+                ? "image/png"
+                : "image/webp";
+
+
+          const formData = new FormData();
+
+          formData.append(
+            "file",
+            new File([imageBlob], originalName, {
+              type: contentType,
+            })
+          );
+
+          const response = await fetch(
+            "/api/restaurant/menu/bulk-import/images",
+            {
+              method: "POST",
+              body: formData,
+            }
+          );
+
+          const result = await response.json();
+
+          if (!response.ok) {
+            throw new Error(
+              result.error || `Failed to upload ${originalName}`
+            );
+          }
+
+          imageMap.set(
+            originalName.toLowerCase(),
+            result.image_url
+          );
+        }
+      }
+
+      const findImageUrl = (imageName: string, productName: string) => {
+        const cleanImg = imageName.split("/").pop()?.trim().toLowerCase() || "";
+        if (cleanImg) {
+          if (imageMap.has(cleanImg)) return imageMap.get(cleanImg)!;
+          const noExt = cleanImg.replace(/\.[^/.]+$/, "");
+          if (imageMap.has(noExt)) return imageMap.get(noExt)!;
+          for (const [key, url] of imageMap.entries()) {
+            const keyNoExt = key.replace(/\.[^/.]+$/, "");
+            if (
+              key === cleanImg ||
+              keyNoExt === noExt ||
+              slugify(keyNoExt) === slugify(noExt)
+            ) {
+              return url;
+            }
+          }
+        }
+        if (productName) {
+          const prodSlug = slugify(productName);
+          for (const [key, url] of imageMap.entries()) {
+            const keySlug = slugify(key.replace(/\.[^/.]+$/, ""));
+            if (keySlug === prodSlug) return url;
+          }
+        }
+        return null;
       };
-    });
 
-    const response = await fetch(
-      "/api/restaurant/menu/bulk-import",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ products }),
+      const products = validRows.map((row) => {
+        return {
+          name: row.name,
+          description: row.description,
+          category: row.category,
+          price: row.price,
+          mrp: row.mrp,
+          vegetarian: row.vegetarian,
+          available: row.available,
+          imageUrl: imageZip
+            ? findImageUrl(row.image, row.name)
+            : row.image.startsWith("http")
+              ? row.image
+              : null,
+        };
+      });
+
+      const response = await fetch(
+        "/api/restaurant/menu/bulk-import",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ products }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Bulk import failed.");
       }
-    );
 
-    const result = await response.json();
+      setMessage(
+        `${result.count} product${result.count === 1 ? "" : "s"} imported successfully.`
+      );
 
-    if (!response.ok) {
-      throw new Error(result.error || "Bulk import failed.");
+      setStep("DONE");
+      await onComplete();
+    } catch (error) {
+      console.error("Bulk import failed:", error);
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Bulk import failed."
+      );
+
+      setStep("REVIEW");
     }
-
-    setMessage(
-      `${result.count} product${result.count === 1 ? "" : "s"} imported successfully.`
-    );
-
-    setStep("DONE");
-    await onComplete();
-  } catch (error) {
-    console.error("Bulk import failed:", error);
-
-    setMessage(
-      error instanceof Error
-        ? error.message
-        : "Bulk import failed."
-    );
-
-    setStep("REVIEW");
   }
-}
 
 
   const validCount =
@@ -2993,7 +3703,7 @@ imageMap.set(
 
         {mode === "IMAGES" &&
           step ===
-            "IMAGE_REVIEW" && (
+          "IMAGE_REVIEW" && (
             <div>
               <div
                 style={{
@@ -3180,7 +3890,7 @@ imageMap.set(
                           "12px 14px",
                         borderBottom:
                           index ===
-                          imageRows.length -
+                            imageRows.length -
                             1
                             ? "none"
                             : "1px solid #f0f1f3",
@@ -3321,7 +4031,7 @@ imageMap.set(
                       "none",
                     background:
                       matchedImageCount >
-                      0
+                        0
                         ? "#111111"
                         : "#9ca3af",
                     color:
@@ -3336,7 +4046,7 @@ imageMap.set(
                       600,
                     cursor:
                       matchedImageCount >
-                      0
+                        0
                         ? "pointer"
                         : "not-allowed",
                   }}
@@ -3490,7 +4200,7 @@ imageMap.set(
                     setFile(
                       event.target
                         .files?.[0] ||
-                        null
+                      null
                     )
                   }
                 />
@@ -3568,7 +4278,7 @@ imageMap.set(
                     setImageZip(
                       event.target
                         .files?.[0] ||
-                        null
+                      null
                     )
                   }
                 />
@@ -3771,12 +4481,12 @@ imageMap.set(
                   style={{
                     background:
                       invalidCount >
-                      0
+                        0
                         ? "#fff5f5"
                         : "#fafafa",
                     border:
                       invalidCount >
-                      0
+                        0
                         ? "1px solid #ffdede"
                         : "1px solid #e7e9ed",
                     borderRadius:
@@ -3791,7 +4501,7 @@ imageMap.set(
                         "11px",
                       color:
                         invalidCount >
-                        0
+                          0
                           ? "#b42318"
                           : "#858a94",
                     }}
@@ -3809,7 +4519,7 @@ imageMap.set(
                         700,
                       color:
                         invalidCount >
-                        0
+                          0
                           ? "#b42318"
                           : "#555a63",
                     }}
@@ -3869,19 +4579,14 @@ imageMap.set(
                     <div
                       key={`${row.name}-${index}`}
                       style={{
-                        display:
-                          "grid",
+                        display: "grid",
                         gridTemplateColumns:
-                          "1.5fr 1fr 100px 100px",
+                          "2fr 1fr 100px 90px",
                         gap: "10px",
-                        alignItems:
-                          "center",
-                        padding:
-                          "11px 13px",
+                        alignItems: "center",
+                        padding: "11px 13px",
                         borderBottom:
-                          index ===
-                          rows.length -
-                            1
+                          index === rows.length - 1
                             ? "none"
                             : "1px solid #f0f1f3",
                       }}
@@ -3889,76 +4594,185 @@ imageMap.set(
                       <div>
                         <div
                           style={{
-                            fontSize:
-                              "11px",
-                            fontWeight:
-                              600,
-                            color:
-                              "#30333a",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            color: "#30333a",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            flexWrap: "wrap",
                           }}
                         >
-                          {row.name ||
-                            "Unnamed product"}
+                          <span>{row.name || "Unnamed product"}</span>
+                          {row.course && (
+                            <span
+                              style={{
+                                fontSize: "9px",
+                                fontWeight: 700,
+                                background: "#f1f5f9",
+                                color: "#475569",
+                                padding: "1px 5px",
+                                borderRadius: "4px",
+                              }}
+                            >
+                              {row.course}
+                            </span>
+                          )}
+                          {row.calories !== null &&
+                            row.calories !== undefined && (
+                              <span
+                                style={{
+                                  fontSize: "9px",
+                                  fontWeight: 650,
+                                  background: "#fef3c7",
+                                  color: "#92400e",
+                                  padding: "1px 5px",
+                                  borderRadius: "4px",
+                                }}
+                              >
+                                🔥 {row.calories} kcal
+                              </span>
+                            )}
+                          {row.spiceLevel && (
+                            <span
+                              style={{
+                                fontSize: "9px",
+                                fontWeight: 650,
+                                background: "#fee2e2",
+                                color: "#991b1b",
+                                padding: "1px 5px",
+                                borderRadius: "4px",
+                              }}
+                            >
+                              🌶 {row.spiceLevel}
+                            </span>
+                          )}
+                          <span
+                            style={{
+                              fontSize: "9px",
+                              fontWeight: 650,
+                              background:
+                                row.dietType === "veg"
+                                  ? "#ecfdf3"
+                                  : row.dietType === "egg"
+                                    ? "#fef9c3"
+                                    : "#f3f4f6",
+                              color:
+                                row.dietType === "veg"
+                                  ? "#15803d"
+                                  : row.dietType === "egg"
+                                    ? "#854d0e"
+                                    : "#666b74",
+                              padding: "1px 5px",
+                              borderRadius: "4px",
+                            }}
+                          >
+                            {row.dietType === "veg"
+                              ? "Veg"
+                              : row.dietType === "egg"
+                                ? "Egg"
+                                : "Non-Veg"}
+                          </span>
                         </div>
+
+                        {row.cleanDescription && (
+                          <div
+                            style={{
+                              marginTop: "3px",
+                              maxWidth: "320px",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                              fontSize: "10px",
+                              color: "#858a94",
+                            }}
+                          >
+                            {row.cleanDescription}
+                          </div>
+                        )}
+
+                        {(row.allergens ||
+                          (row.nutritionTags &&
+                            row.nutritionTags.length > 0)) && (
+                            <div
+                              style={{
+                                marginTop: "3px",
+                                display: "flex",
+                                gap: "4px",
+                                flexWrap: "wrap",
+                              }}
+                            >
+                              {row.allergens && (
+                                <span
+                                  style={{
+                                    fontSize: "9px",
+                                    color: "#b45309",
+                                    background: "#fffbeb",
+                                    padding: "1px 4px",
+                                    borderRadius: "3px",
+                                    border: "1px solid #fde68a",
+                                  }}
+                                >
+                                  ⚠️ {row.allergens}
+                                </span>
+                              )}
+                              {row.nutritionTags?.map((t, i) => (
+                                <span
+                                  key={i}
+                                  style={{
+                                    fontSize: "9px",
+                                    color: "#166534",
+                                    background: "#f0fdf4",
+                                    padding: "1px 4px",
+                                    borderRadius: "3px",
+                                  }}
+                                >
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
 
                         {row.error && (
                           <div
                             style={{
-                              marginTop:
-                                "3px",
-                              fontSize:
-                                "10px",
-                              color:
-                                "#b42318",
+                              marginTop: "3px",
+                              fontSize: "10px",
+                              color: "#b42318",
                             }}
                           >
-                            {
-                              row.error
-                            }
+                            {row.error}
                           </div>
                         )}
                       </div>
 
                       <div
                         style={{
-                          fontSize:
-                            "11px",
-                          color:
-                            "#666b74",
+                          fontSize: "11px",
+                          color: "#666b74",
                         }}
                       >
-                        {row.category ||
-                          "—"}
+                        {row.category || "—"}
                       </div>
 
                       <div
                         style={{
-                          fontSize:
-                            "11px",
-                          fontWeight:
-                            600,
+                          fontSize: "11px",
+                          fontWeight: 600,
                         }}
                       >
-                        {formatCurrency(
-                          row.price
-                        )}
+                        {formatCurrency(row.price, currency)}
                       </div>
 
                       <div
                         style={{
-                          fontSize:
-                            "10px",
-                          fontWeight:
-                            650,
+                          fontSize: "10px",
+                          fontWeight: 650,
                           color:
-                            row.valid
-                              ? "#15803d"
-                              : "#b42318",
+                            row.valid ? "#15803d" : "#b42318",
                         }}
                       >
-                        {row.valid
-                          ? "Ready"
-                          : "Invalid"}
+                        {row.valid ? "Ready" : "Invalid"}
                       </div>
                     </div>
                   )
@@ -4034,7 +4848,7 @@ imageMap.set(
                       "none",
                     background:
                       validCount >
-                      0
+                        0
                         ? "#111111"
                         : "#9ca3af",
                     color:
@@ -4049,7 +4863,7 @@ imageMap.set(
                       600,
                     cursor:
                       validCount >
-                      0
+                        0
                         ? "pointer"
                         : "not-allowed",
                   }}
@@ -4066,45 +4880,45 @@ imageMap.set(
 
         {step ===
           "ADDING" && (
-          <div
-            style={{
-              padding:
-                "50px 20px",
-              textAlign:
-                "center",
-            }}
-          >
             <div
               style={{
-                fontSize:
-                  "15px",
-                fontWeight:
-                  650,
-                color:
-                  "#30333a",
+                padding:
+                  "50px 20px",
+                textAlign:
+                  "center",
               }}
             >
-              {mode ===
-              "IMAGES"
-                ? "Uploading images..."
-                : "Adding products..."}
-            </div>
+              <div
+                style={{
+                  fontSize:
+                    "15px",
+                  fontWeight:
+                    650,
+                  color:
+                    "#30333a",
+                }}
+              >
+                {mode ===
+                  "IMAGES"
+                  ? "Uploading images..."
+                  : "Adding products..."}
+              </div>
 
-            <div
-              style={{
-                marginTop:
-                  "7px",
-                fontSize:
-                  "12px",
-                color:
-                  "#858a94",
-              }}
-            >
-              Please don't close
-              this window.
+              <div
+                style={{
+                  marginTop:
+                    "7px",
+                  fontSize:
+                    "12px",
+                  color:
+                    "#858a94",
+                }}
+              >
+                Please don't close
+                this window.
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
         {/* ======================================================
             DONE
@@ -4112,104 +4926,104 @@ imageMap.set(
 
         {step ===
           "DONE" && (
-          <div
-            style={{
-              padding:
-                "45px 20px",
-              textAlign:
-                "center",
-            }}
-          >
             <div
               style={{
-                width: "46px",
-                height: "46px",
-                margin:
-                  "0 auto 15px",
-                borderRadius:
-                  "50%",
-                background:
-                  "#ecfdf3",
-                color:
-                  "#15803d",
-                display:
-                  "flex",
-                alignItems:
-                  "center",
-                justifyContent:
-                  "center",
-                fontSize:
-                  "20px",
-                fontWeight:
-                  700,
-              }}
-            >
-              ✓
-            </div>
-
-            <div
-              style={{
-                fontSize:
-                  "16px",
-                fontWeight:
-                  700,
-                color:
-                  "#202228",
-              }}
-            >
-              {mode ===
-              "IMAGES"
-                ? "Images uploaded"
-                : "Menu updated"}
-            </div>
-
-            <div
-              style={{
-                marginTop:
-                  "6px",
-                fontSize:
-                  "12px",
-                color:
-                  "#858a94",
-              }}
-            >
-              {mode ===
-              "IMAGES"
-                ? message ||
-                  "Product images were uploaded successfully."
-                : `${validCount} products were added successfully.`}
-            </div>
-
-            <button
-              type="button"
-              onClick={
-                onComplete
-              }
-              style={{
-                marginTop:
-                  "20px",
-                border:
-                  "none",
-                background:
-                  "#111111",
-                color:
-                  "#ffffff",
-                borderRadius:
-                  "8px",
                 padding:
-                  "10px 18px",
-                fontSize:
-                  "12px",
-                fontWeight:
-                  600,
-                cursor:
-                  "pointer",
+                  "45px 20px",
+                textAlign:
+                  "center",
               }}
             >
-              Done
-            </button>
-          </div>
-        )}
+              <div
+                style={{
+                  width: "46px",
+                  height: "46px",
+                  margin:
+                    "0 auto 15px",
+                  borderRadius:
+                    "50%",
+                  background:
+                    "#ecfdf3",
+                  color:
+                    "#15803d",
+                  display:
+                    "flex",
+                  alignItems:
+                    "center",
+                  justifyContent:
+                    "center",
+                  fontSize:
+                    "20px",
+                  fontWeight:
+                    700,
+                }}
+              >
+                ✓
+              </div>
+
+              <div
+                style={{
+                  fontSize:
+                    "16px",
+                  fontWeight:
+                    700,
+                  color:
+                    "#202228",
+                }}
+              >
+                {mode ===
+                  "IMAGES"
+                  ? "Images uploaded"
+                  : "Menu updated"}
+              </div>
+
+              <div
+                style={{
+                  marginTop:
+                    "6px",
+                  fontSize:
+                    "12px",
+                  color:
+                    "#858a94",
+                }}
+              >
+                {mode ===
+                  "IMAGES"
+                  ? message ||
+                  "Product images were uploaded successfully."
+                  : `${validCount} products were added successfully.`}
+              </div>
+
+              <button
+                type="button"
+                onClick={
+                  onComplete
+                }
+                style={{
+                  marginTop:
+                    "20px",
+                  border:
+                    "none",
+                  background:
+                    "#111111",
+                  color:
+                    "#ffffff",
+                  borderRadius:
+                    "8px",
+                  padding:
+                    "10px 18px",
+                  fontSize:
+                    "12px",
+                  fontWeight:
+                    600,
+                  cursor:
+                    "pointer",
+                }}
+              >
+                Done
+              </button>
+            </div>
+          )}
       </div>
     </Modal>
   );

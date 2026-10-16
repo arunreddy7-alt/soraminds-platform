@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+
 type QRPageProps = {
   params: Promise<{
     code: string;

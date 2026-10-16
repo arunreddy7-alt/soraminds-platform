@@ -413,3 +413,129 @@ export async function PATCH(request: Request) {
     );
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    // Verify the user has permission to manage the menu.
+    const auth = await requireMenuManager();
+
+    if ("error" in auth) {
+      return auth.error;
+    }
+
+    // Read and validate the category ID.
+    const { searchParams } = new URL(request.url);
+    const categoryId = Number(searchParams.get("id"));
+
+    if (
+      !Number.isSafeInteger(categoryId) ||
+      categoryId <= 0
+    ) {
+      return NextResponse.json(
+        { error: "Valid category ID is required." },
+        { status: 400 }
+      );
+    }
+
+    // Confirm the category belongs to this restaurant.
+    const { data: category, error: categoryError } =
+      await auth.admin
+        .from("categories")
+        .select("id")
+        .eq("id", categoryId)
+        .eq("restaurant_id", auth.restaurantId)
+        .maybeSingle();
+
+    if (categoryError) {
+      console.error(
+        "Category lookup before deletion failed:",
+        categoryError
+      );
+
+      return NextResponse.json(
+        { error: "Failed to verify category." },
+        { status: 500 }
+      );
+    }
+
+    if (!category) {
+      return NextResponse.json(
+        { error: "Category not found." },
+        { status: 404 }
+      );
+    }
+
+    // Prevent deletion while products still use this category.
+    const { data: products, error: productsError } =
+      await auth.admin
+        .from("products")
+        .select("id")
+        .eq("category_id", categoryId)
+        .eq("restaurant_id", auth.restaurantId)
+        .limit(1);
+
+    if (productsError) {
+      console.error(
+        "Product lookup before category deletion failed:",
+        productsError
+      );
+
+      return NextResponse.json(
+        { error: "Failed to check products in this category." },
+        { status: 500 }
+      );
+    }
+
+    if (products && products.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            "This category contains products. Move those products to another category or delete them before deleting this category.",
+        },
+        { status: 409 }
+      );
+    }
+
+    // Delete only the category belonging to this restaurant.
+    const { error: deleteError } = await auth.admin
+      .from("categories")
+      .delete()
+      .eq("id", categoryId)
+      .eq("restaurant_id", auth.restaurantId);
+
+    if (deleteError) {
+      console.error(
+        "Category deletion failed:",
+        deleteError
+      );
+
+      if (deleteError.code === "23503") {
+        return NextResponse.json(
+          {
+            error:
+              "This category is still being referenced by other records and cannot be deleted.",
+          },
+          { status: 409 }
+        );
+      }
+
+      return NextResponse.json(
+        { error: "Failed to delete category." },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: "Category deleted successfully.",
+      categoryId,
+    });
+  } catch (error) {
+    console.error("Category DELETE error:", error);
+
+    return NextResponse.json(
+      { error: "Internal server error." },
+      { status: 500 }
+    );
+  }
+}

@@ -9,6 +9,7 @@ import {
   getRestaurantTimeZone,
   getZonedDateRange,
 } from "@/lib/timezone";
+import { getCurrencySymbol } from "@/lib/currency";
 
 type Restaurant = {
   id: number;
@@ -16,6 +17,9 @@ type Restaurant = {
   is_open: boolean;
   accept_orders: boolean;
   timezone: string | null;
+  features?: {
+    currency?: string;
+  } | null;
 };
 
 type DashboardOrder = {
@@ -70,8 +74,9 @@ function getTodayRange(timeZone: string) {
   return getZonedDateRange(date, date, timeZone);
 }
 
-function formatCurrency(value: number) {
-  return `₹${value.toLocaleString("en-IN", {
+function formatCurrency(value: number, curr = "INR") {
+  const sym = getCurrencySymbol(curr);
+  return `${sym}${value.toLocaleString(undefined, {
     maximumFractionDigits: 0,
   })}`;
 }
@@ -129,6 +134,9 @@ export default function RestaurantDashboardClient() {
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
   const [greeting, setGreeting] = useState("Hello");
 
+  const currency = restaurant?.features?.currency || "INR";
+  const formatMoney = (val: number) => formatCurrency(val, currency);
+
   const [todayOrders, setTodayOrders] = useState<DashboardOrder[]>([]);
   const [todayCustomers, setTodayCustomers] = useState<Customer[]>([]);
   const [topProducts, setTopProducts] = useState<
@@ -185,7 +193,7 @@ export default function RestaurantDashboardClient() {
         const { data: restaurantData, error: restaurantError } =
           await supabase
             .from("restaurants")
-            .select("id, name, is_open, accept_orders")
+            .select("id, name, is_open, accept_orders, features")
             .eq("id", restaurantId)
             .single();
 
@@ -487,7 +495,7 @@ export default function RestaurantDashboardClient() {
       label: "Today's Revenue",
       value: loading
         ? "—"
-        : formatCurrency(totalRevenue),
+        : formatMoney(totalRevenue),
     },
     {
       label: "Today's Orders",
@@ -499,7 +507,7 @@ export default function RestaurantDashboardClient() {
       label: "Average Order Value",
       value: loading
         ? "—"
-        : formatCurrency(averageOrderValue),
+        : formatMoney(averageOrderValue),
     },
     {
       label: "Customers Today",
@@ -713,7 +721,7 @@ export default function RestaurantDashboardClient() {
                 color: "#202228",
               }}
             >
-              {formatCurrency(
+              {formatMoney(
                 revenueTrend.reduce(
                   (sum, item) => sum + item.revenue,
                   0
@@ -766,7 +774,7 @@ export default function RestaurantDashboardClient() {
                       transition:
                         "height 0.2s ease",
                     }}
-                    title={formatCurrency(
+                    title={formatMoney(
                       item.revenue
                     )}
                   />
@@ -1047,7 +1055,7 @@ export default function RestaurantDashboardClient() {
                           "1px solid #f0f1f3",
                       }}
                     >
-                      {formatCurrency(
+                      {formatMoney(
                         Number(order.total)
                       )}
                     </td>

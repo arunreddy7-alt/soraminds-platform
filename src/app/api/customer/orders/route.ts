@@ -6,6 +6,7 @@ import { parseTimestamp } from "@/lib/timezone";
 type RequestItem = {
   productId: number;
   variantId: number | null;
+  variantName?: string | null;
   quantity: number;
 };
 
@@ -116,7 +117,7 @@ export async function POST(request: Request) {
       } = await supabase
         .from("table_session_items")
         .select(
-          "id, product_id, variant_id, combo_id, quantity, unit_price"
+          "id, product_id, variant_id, variant_name, combo_id, quantity, unit_price"
         )
         .eq("table_session_id", session.id);
 
@@ -130,7 +131,7 @@ export async function POST(request: Request) {
       }
 
       for (const item of sharedItems) {
-        const key = `${item.product_id}:${item.variant_id ?? "null"}`;
+        const key = `${item.product_id}:${item.variant_id ?? "null"}:${item.variant_name ?? ""}`;
         const existing = quantities.get(key);
 
         if (existing) {
@@ -139,6 +140,7 @@ export async function POST(request: Request) {
           quantities.set(key, {
             productId: item.product_id,
             variantId: item.variant_id,
+            variantName: item.variant_name ?? null,
             quantity: item.quantity,
           });
         }
@@ -166,7 +168,7 @@ export async function POST(request: Request) {
           );
         }
 
-        const key = `${item.productId}:${item.variantId ?? "null"}`;
+        const key = `${item.productId}:${item.variantId ?? "null"}:${item.variantName ?? ""}`;
         const existing = quantities.get(key);
 
         if (existing) {
@@ -275,6 +277,7 @@ export async function POST(request: Request) {
       orderItems.push({
         product_id: item.productId,
         variant_id: item.variantId,
+        variant_name: item.variantName ?? null,
         combo_id: null,
         quantity: item.quantity,
         unit_price: unitPrice,

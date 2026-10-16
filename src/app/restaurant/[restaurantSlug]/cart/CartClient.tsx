@@ -17,6 +17,7 @@ import {
   updateCartItem,
   removeCartItem,
 } from "@/lib/cart";
+import { getCurrencySymbol } from "@/lib/currency";
 
 type SharedCartItem = {
   id: number;
@@ -94,6 +95,20 @@ export default function CartClient({
 
   const [sessionCode, setSessionCode] =
     useState("");
+
+  const [currency, setCurrency] =
+    useState("INR");
+
+  useEffect(() => {
+    fetch(`/api/customer/storefront/${restaurantSlug}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.restaurant?.features?.currency) {
+          setCurrency(data.restaurant.features.currency);
+        }
+      })
+      .catch(() => {});
+  }, [restaurantSlug]);
 
   /* --------------------------------
      TAKEAWAY CART
@@ -982,7 +997,7 @@ export default function CartClient({
                                 "700",
                             }}
                           >
-                            ₹
+                            {getCurrencySymbol(currency)}
                             {Number(
                               item.price
                             ).toFixed(2)}
@@ -1091,7 +1106,7 @@ export default function CartClient({
                               "#858a94",
                           }}
                         >
-                          Item total: ₹
+                          Item total: {getCurrencySymbol(currency)}
                           {(
                             Number(
                               item.price
@@ -1183,7 +1198,7 @@ export default function CartClient({
                   </span>
 
                   <span>
-                    ₹
+                    {getCurrencySymbol(currency)}
                     {Number(
                       total
                     ).toFixed(2)}
@@ -1217,7 +1232,7 @@ export default function CartClient({
                   </span>
 
                   <span>
-                    ₹
+                    {getCurrencySymbol(currency)}
                     {Number(
                       total
                     ).toFixed(2)}

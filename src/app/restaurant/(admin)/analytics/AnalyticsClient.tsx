@@ -10,6 +10,7 @@ import {
   getRestaurantTimeZone,
   getZonedDateRange,
 } from "@/lib/timezone";
+import { getCurrencySymbol } from "@/lib/currency";
 
 type RangeType =
   | "today"
@@ -73,8 +74,10 @@ type AnalyticsData = {
   customers: Customer[];
 };
 
-function formatCurrency(value: number) {
-  return `₹${value.toLocaleString("en-IN", {
+function formatCurrency(value: number, curr = "INR") {
+  const sym = getCurrencySymbol(curr);
+  return `${sym}${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
 }
@@ -92,6 +95,9 @@ function formatDateLabel(date: Date, timeZone: string) {
 
 export default function AnalyticsClient() {
   const supabase = createClient();
+
+  const [currency, setCurrency] = useState("INR");
+  const formatMoney = (val: number) => formatCurrency(val, currency);
 
   const [range, setRange] =
     useState<RangeType>("7days");
@@ -231,7 +237,7 @@ export default function AnalyticsClient() {
       const { data: restaurant, error: restaurantError } =
         await supabase
           .from("restaurants")
-          .select("id")
+          .select("id, features, timezone")
           .eq("id", currentRestaurantId)
           .single();
 
@@ -239,7 +245,14 @@ export default function AnalyticsClient() {
         throw new Error(restaurantError.message);
       }
 
-      const timeZone = getRestaurantTimeZone(null);
+      if (restaurant?.features && typeof restaurant.features === "object") {
+        const feat = restaurant.features as Record<string, unknown>;
+        if (typeof feat.currency === "string" && feat.currency.trim()) {
+          setCurrency(feat.currency.trim().toUpperCase());
+        }
+      }
+
+      const timeZone = getRestaurantTimeZone(restaurant?.timezone || null);
       setRestaurantTimeZone(timeZone);
 
       const {
@@ -1328,7 +1341,7 @@ export default function AnalyticsClient() {
           {
             label: "Revenue",
             value:
-              formatCurrency(
+              formatMoney(
                 overview.revenue
               ),
           },
@@ -1343,7 +1356,7 @@ export default function AnalyticsClient() {
             label:
               "Average Order Value",
             value:
-              formatCurrency(
+              formatMoney(
                 overview.aov
               ),
           },
@@ -1482,7 +1495,7 @@ export default function AnalyticsClient() {
                           "nowrap",
                       }}
                     >
-                      {formatCurrency(
+                      {formatMoney(
                         item.revenue
                       )}
                     </div>
@@ -1499,7 +1512,7 @@ export default function AnalyticsClient() {
                       title={`${formatDateLabel(
                         item.date,
                         restaurantTimeZone
-                      )}: ${formatCurrency(
+                      )}: ${formatMoney(
                         item.revenue
                       )}`}
                     />
@@ -1892,7 +1905,7 @@ export default function AnalyticsClient() {
                             "nowrap",
                         }}
                       >
-                        {formatCurrency(
+                        {formatMoney(
                           product.revenue
                         )}
                       </div>
@@ -2162,7 +2175,7 @@ export default function AnalyticsClient() {
                     "#202228",
                 }}
               >
-                {formatCurrency(
+                {formatMoney(
                   couponAnalytics.discountGiven
                 )}
               </div>

@@ -6,6 +6,7 @@ import {
   formatTimestamp,
   getRestaurantTimeZone,
 } from "@/lib/timezone";
+import { getCurrencySymbol } from "@/lib/currency";
 
 type Order = {
   id: number;
@@ -37,6 +38,7 @@ type OrderItem = {
   order_id: number;
   product_id: number | null;
   variant_id: number | null;
+  variant_name: string | null;
   combo_id: number | null;
   quantity: number;
   unit_price: number;
@@ -54,6 +56,7 @@ type SelectedOrder = {
   items: {
     item: OrderItem;
     product: Product | null;
+    variant: { id: number; name: string } | null;
   }[];
 };
 
@@ -73,9 +76,11 @@ const ORDER_TYPE_OPTIONS = [
   "TAKEAWAY",
 ];
 
-function formatCurrency(value: number) {
-  return `₹${Number(value || 0).toLocaleString("en-IN", {
-    maximumFractionDigits: 0,
+function formatCurrencyGlobal(value: number, curr = "INR") {
+  const sym = getCurrencySymbol(curr);
+  return `${sym}${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   })}`;
 }
 
@@ -155,55 +160,58 @@ export default function OrdersPage() {
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState("");
+  const [currency, setCurrency] = useState("INR");
+
+  const formatCurrency = (val: number) => formatCurrencyGlobal(val, currency);
 
   const [canManageOrders, setCanManageOrders] = useState(false);
-const [permissionLoaded, setPermissionLoaded] = useState(false);
+  const [permissionLoaded, setPermissionLoaded] = useState(false);
 
-useEffect(() => {
-  let active = true;
+  useEffect(() => {
+    let active = true;
 
-  async function loadOrderPermission() {
-    try {
-      const response = await fetch("/api/restaurant/me", {
-        cache: "no-store",
-      });
+    async function loadOrderPermission() {
+      try {
+        const response = await fetch("/api/restaurant/me", {
+          cache: "no-store",
+        });
 
-      if (!response.ok) {
-        throw new Error("Unable to load permissions.");
-      }
+        if (!response.ok) {
+          throw new Error("Unable to load permissions.");
+        }
 
-      const data = await response.json();
+        const data = await response.json();
 
-      const isOwner = data.role?.name === "OWNER";
+        const isOwner = data.role?.name === "OWNER";
 
-      const ordersAccess =
-        data.permissions?.find(
-          (permission: { module: string; access: string }) =>
-            permission.module === "orders"
-        )?.access ?? "NONE";
+        const ordersAccess =
+          data.permissions?.find(
+            (permission: { module: string; access: string }) =>
+              permission.module === "orders"
+          )?.access ?? "NONE";
 
-      if (active) {
-        setCanManageOrders(isOwner || ordersAccess === "FULL");
-      }
-    } catch (error) {
-      console.error("Failed to load order permissions:", error);
+        if (active) {
+          setCanManageOrders(isOwner || ordersAccess === "FULL");
+        }
+      } catch (error) {
+        console.error("Failed to load order permissions:", error);
 
-      if (active) {
-        setCanManageOrders(false);
-      }
-    } finally {
-      if (active) {
-        setPermissionLoaded(true);
+        if (active) {
+          setCanManageOrders(false);
+        }
+      } finally {
+        if (active) {
+          setPermissionLoaded(true);
+        }
       }
     }
-  }
 
-  loadOrderPermission();
+    loadOrderPermission();
 
-  return () => {
-    active = false;
-  };
-}, []);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const [restaurantId, setRestaurantId] =
     useState<number | null>(null);
@@ -249,7 +257,7 @@ useEffect(() => {
       const { data: restaurantData, error: restaurantError } =
         await supabase
           .from("restaurants")
-          .select("id")
+          .select("id, features, timezone")
           .eq("id", id)
           .single();
 
@@ -257,7 +265,17 @@ useEffect(() => {
         throw restaurantError;
       }
 
-      setRestaurantTimeZone("Asia/Kolkata");
+      if (
+        restaurantData?.features &&
+        typeof restaurantData.features === "object"
+      ) {
+        const feat = restaurantData.features as Record<string, unknown>;
+        if (typeof feat.currency === "string" && feat.currency.trim()) {
+          setCurrency(feat.currency.trim().toUpperCase());
+        }
+      }
+
+      setRestaurantTimeZone(restaurantData?.timezone || "Asia/Kolkata");
 
       const { data: ordersData, error: ordersError } =
         await supabase
@@ -431,6 +449,7 @@ useEffect(() => {
             order_id,
             product_id,
             variant_id,
+            variant_name,
             combo_id,
             quantity,
             unit_price,
@@ -470,76 +489,100 @@ useEffect(() => {
         ])
       );
 
+      const variantIds = Array.from(
+        new Set(
+          items
+            .map((item) => item.variant_id)
+            .filter((id): id is number => id !== null)
+        )
+      );
+
+      let variants: { id: number; name: string }[] = [];
+      if (variantIds.length > 0) {
+        const { data: variantsData } = await supabase
+          .from("product_variants")
+          .select("id, name")
+          .in("id", variantIds);
+        variants = variantsData || [];
+      }
+
+      const variantMap = new Map(
+        variants.map((variant) => [variant.id, variant])
+      );
+
       const customer = order.customer_id
         ? customerMap.get(order.customer_id) || null
         : null;
 
       setSelectedOrder({
-  order,
-  customer,
-  items: items.map((item) => ({
-    item,
-    product: item.product_id
-      ? productMap.get(item.product_id) || null
-      : null,
-  })),
-});
+        order,
+        customer,
+        items: items.map((item) => ({
+          item,
+          product: item.product_id
+            ? productMap.get(item.product_id) || null
+            : null,
+          variant: item.variant_id
+            ? variantMap.get(item.variant_id) || null
+            : null,
+        })),
+      });
     } catch (err) {
       console.error(err);
       setError("Unable to load order details.");
     }
   }
 
-  
-async function updateOrderStatus(
-  orderId: number,
-  newStatus: string
-) {
-  if (!permissionLoaded || !canManageOrders) {
-    setError("You don't have permission to update orders.");
-    return;
-  }
 
-  try {
-    setUpdating(true);
-    setError("");
+  async function updateOrderStatus(
+    orderId: number,
+    newStatus: string
+  ) {
+    if (!permissionLoaded || !canManageOrders) {
+      setError("You don't have permission to update orders.");
+      return;
+    }
 
-    const response = await fetch(
-      `/api/restaurant/orders/${orderId}/status`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ status: newStatus }),
-      }
-    );
+    try {
+      setUpdating(true);
+      setError("");
 
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data.error || "Unable to update order status."
+      const response = await fetch(
+        `/api/restaurant/orders/${orderId}/status`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ status: newStatus }),
+        }
       );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error || "Unable to update order status."
+        );
+      }
+
+      await loadOrders();
+
+      if (selectedOrder?.order.id === orderId) {
+        setSelectedOrder(null);
+      }
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to update order status."
+      );
+    } finally {
+      setUpdating(false);
     }
-
-    await loadOrders();
-
-    if (selectedOrder?.order.id === orderId) {
-      setSelectedOrder(null);
-    }
-  } catch (err) {
-    console.error(err);
-
-    setError(
-      err instanceof Error
-        ? err.message
-        : "Unable to update order status."
-    );
-  } finally {
-    setUpdating(false);
   }
-}
 
 
   const stats = {
@@ -885,8 +928,8 @@ async function updateOrderStatus(
                 {filteredOrders.map((order) => {
                   const customer = order.customer_id
                     ? customerMap.get(
-                        order.customer_id
-                      )
+                      order.customer_id
+                    )
                     : null;
 
                   const nextStatus =
@@ -998,7 +1041,7 @@ async function updateOrderStatus(
                             fontWeight: 600,
                             color:
                               order.payment_status ===
-                              "PAID"
+                                "PAID"
                                 ? "#15803d"
                                 : "#9a6700",
                           }}
@@ -1113,45 +1156,45 @@ async function updateOrderStatus(
                             View
                           </button>
 
-                          {canManageOrders && nextStatus && nextLabel &&  (
-                              <button
-                                onClick={() =>
-                                  updateOrderStatus(
-                                    order.id,
-                                    nextStatus
-                                  )
-                                }
-                                disabled={
+                          {canManageOrders && nextStatus && nextLabel && (
+                            <button
+                              onClick={() =>
+                                updateOrderStatus(
+                                  order.id,
+                                  nextStatus
+                                )
+                              }
+                              disabled={
+                                updating
+                              }
+                              style={{
+                                border:
+                                  "none",
+                                background:
+                                  "#111111",
+                                color:
+                                  "#ffffff",
+                                borderRadius:
+                                  "7px",
+                                padding:
+                                  "7px 10px",
+                                fontSize:
+                                  "10px",
+                                fontWeight:
+                                  600,
+                                cursor:
                                   updating
-                                }
-                                style={{
-                                  border:
-                                    "none",
-                                  background:
-                                    "#111111",
-                                  color:
-                                    "#ffffff",
-                                  borderRadius:
-                                    "7px",
-                                  padding:
-                                    "7px 10px",
-                                  fontSize:
-                                    "10px",
-                                  fontWeight:
-                                    600,
-                                  cursor:
-                                    updating
-                                      ? "not-allowed"
-                                      : "pointer",
-                                  opacity:
-                                    updating
-                                      ? 0.6
-                                      : 1,
-                                }}
-                              >
-                                {nextLabel}
-                              </button>
-                            )}
+                                    ? "not-allowed"
+                                    : "pointer",
+                                opacity:
+                                  updating
+                                    ? 0.6
+                                    : 1,
+                              }}
+                            >
+                              {nextLabel}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1233,39 +1276,39 @@ async function updateOrderStatus(
               </div>
 
               <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-  <button
-    className="no-print"
-    onClick={() => window.print()}
-    style={{
-      border: "none",
-      background: "#111111",
-      color: "#ffffff",
-      padding: "8px 13px",
-      borderRadius: "7px",
-      cursor: "pointer",
-      fontSize: "12px",
-      fontWeight: 600,
-    }}
-  >
-    🖨️ Print
-  </button>
+                <button
+                  className="no-print"
+                  onClick={() => window.print()}
+                  style={{
+                    border: "none",
+                    background: "#111111",
+                    color: "#ffffff",
+                    padding: "8px 13px",
+                    borderRadius: "7px",
+                    cursor: "pointer",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                  }}
+                >
+                  🖨️ Print
+                </button>
 
-  <button
-    className="no-print"
-    onClick={() => setSelectedOrder(null)}
-    style={{
-      border: "none",
-      background: "#f3f4f6",
-      width: "30px",
-      height: "30px",
-      borderRadius: "7px",
-      cursor: "pointer",
-      fontSize: "16px",
-    }}
-  >
-    ×
-  </button>
-</div>
+                <button
+                  className="no-print"
+                  onClick={() => setSelectedOrder(null)}
+                  style={{
+                    border: "none",
+                    background: "#f3f4f6",
+                    width: "30px",
+                    height: "30px",
+                    borderRadius: "7px",
+                    cursor: "pointer",
+                    fontSize: "16px",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
             </div>
 
             {/* Customer */}
@@ -1365,7 +1408,7 @@ async function updateOrderStatus(
               ) : (
                 <div>
                   {selectedOrder.items.map(
-                    ({ item, product }) => (
+                    ({ item, product, variant }) => (
                       <div
                         key={item.id}
                         style={{
@@ -1396,6 +1439,23 @@ async function updateOrderStatus(
                               (item.combo_id
                                 ? "Combo"
                                 : "Product")}
+                            {(item.variant_name || variant?.name) && (
+                              <span
+                                style={{
+                                  marginLeft: "6px",
+                                  fontSize: "10px",
+                                  fontWeight: 550,
+                                  color: "#0369a1",
+                                  background: "#f0f9ff",
+                                  padding: "2px 7px",
+                                  borderRadius: "4px",
+                                  border: "1px solid #bae6fd",
+                                }}
+                              >
+                                {/spice|spicy/i.test(item.variant_name || variant?.name || "") ? "🌶 " : "🏷️ "}
+                                {item.variant_name || variant?.name}
+                              </span>
+                            )}
                           </div>
 
                           <div
@@ -1434,7 +1494,7 @@ async function updateOrderStatus(
                             )
                           )}
                         </div>
-                        
+
                       </div>
                     )
                   )}
@@ -1568,40 +1628,40 @@ async function updateOrderStatus(
               </div>
 
               {canManageOrders &&
-  getNextStatus(selectedOrder.order.status) && (
-                <button
-                  onClick={() =>
-                    updateOrderStatus(
-                      selectedOrder.order.id,
-                      getNextStatus(
-                        selectedOrder.order
-                          .status
-                      )!
-                    )
-                  }
-                  disabled={updating}
-                  style={{
-                    border: "none",
-                    background: "#111111",
-                    color: "#ffffff",
-                    borderRadius: "8px",
-                    padding: "10px 15px",
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    cursor: updating
-                      ? "not-allowed"
-                      : "pointer",
-                    opacity: updating ? 0.6 : 1,
-                  }}
-                >
-                  {updating
-                    ? "Updating..."
-                    : getNextStatusLabel(
+                getNextStatus(selectedOrder.order.status) && (
+                  <button
+                    onClick={() =>
+                      updateOrderStatus(
+                        selectedOrder.order.id,
+                        getNextStatus(
+                          selectedOrder.order
+                            .status
+                        )!
+                      )
+                    }
+                    disabled={updating}
+                    style={{
+                      border: "none",
+                      background: "#111111",
+                      color: "#ffffff",
+                      borderRadius: "8px",
+                      padding: "10px 15px",
+                      fontSize: "12px",
+                      fontWeight: 600,
+                      cursor: updating
+                        ? "not-allowed"
+                        : "pointer",
+                      opacity: updating ? 0.6 : 1,
+                    }}
+                  >
+                    {updating
+                      ? "Updating..."
+                      : getNextStatusLabel(
                         selectedOrder.order
                           .status
                       )}
-                </button>
-              )}
+                  </button>
+                )}
             </div>
           </div>
         </div>

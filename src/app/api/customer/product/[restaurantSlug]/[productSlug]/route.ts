@@ -34,6 +34,7 @@ export async function GET(
         accent_color,
         is_open,
         accept_orders,
+        features,
         is_active
       `
       )

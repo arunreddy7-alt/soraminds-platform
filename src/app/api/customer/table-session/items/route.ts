@@ -6,6 +6,7 @@ type AddItemRequest = {
   tableSessionId: number;
   productId: number;
   variantId: number | null;
+  variantName?: string | null;
   quantity: number;
 };
 
@@ -168,6 +169,7 @@ export async function GET(
             table_session_id,
             product_id,
             variant_id,
+            variant_name,
             combo_id,
             quantity,
             unit_price,
@@ -430,6 +432,7 @@ export async function POST(
       tableSessionId,
       productId,
       variantId,
+      variantName,
       quantity,
     } = body;
 
@@ -645,6 +648,11 @@ export async function POST(
             variantId
           );
 
+    query =
+      variantName
+        ? query.eq("variant_name", variantName)
+        : query.is("variant_name", null);
+
     const {
       data: existingItem,
       error: existingError,
@@ -727,6 +735,8 @@ export async function POST(
           productId,
         variant_id:
           variantId ?? null,
+        variant_name:
+          variantName ?? null,
         combo_id: null,
         quantity,
         unit_price:

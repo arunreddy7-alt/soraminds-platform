@@ -202,6 +202,10 @@ export async function PUT(request: Request) {
       live_entertainment: Boolean(
         features?.live_entertainment
       ),
+      currency:
+        typeof features?.currency === "string" && features.currency.trim()
+          ? features.currency.trim().toUpperCase()
+          : "INR",
     };
 
     const { data: existingSlug } = await admin
