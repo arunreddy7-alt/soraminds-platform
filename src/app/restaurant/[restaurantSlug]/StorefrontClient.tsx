@@ -102,7 +102,7 @@ function getDietaryType(product: Product, categories: Category[]): DietaryType {
   const cat = categories.find((c) => c.id === product.category_id);
   const catName = (cat?.name || "").toLowerCase();
 
-  // Check for Egg
+  // Check for Egg 
   if (
     desc.includes("[egg]") ||
     catName.includes("egg") ||
@@ -1466,7 +1466,7 @@ export default function StorefrontClient({
                      <img
   src={product.image_url}
   alt={product.name}
-  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[250px] h-[240px] sm:w-[200px] sm:h-[200px] md:w-[250px] md:h-[250px] lg:w-[380px] lg:h-[380px] object-contain object-center group-hover:scale-105 transition-transform duration-300"
+  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[250px] h-[240px] sm:w-[200px] sm:h-[200px] md:w-[250px] md:h-[250px] lg:w-[350px] lg:h-[350px] object-contain object-center group-hover:scale-105 transition-transform duration-300"
 />
                     ) : (
                       <div className="absolute inset-0 flex items-center justify-center">
