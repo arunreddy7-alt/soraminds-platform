@@ -232,6 +232,7 @@ export async function POST(request: Request) {
     const orderItems: Array<{
       product_id: number;
       variant_id: number | null;
+      variant_name: string | null;
       combo_id: number | null;
       quantity: number;
       unit_price: number;
