@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import Image from "next/image";
+
 import {
   getCartCount,
   addToCart,
@@ -192,11 +194,19 @@ export default function StorefrontClient({
   const [products, setProducts] = useState<Product[]>([]);
   const [combos, setCombos] = useState<Combo[]>([]);
   const [banners, setBanners] = useState<Banner[]>([]);
+  const dietaryTabs = [
+  { label: "All", value: "ALL" },
+  { label: "Veg", value: "veg" },
+  { label: "Non-Veg", value: "non-veg" },
+  { label: "Egg", value: "egg" },
+  { label: "Beverage", value: "beverage" },
+  { label: "Dessert", value: "dessert" },
+] as const;
 
   const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [availabilityFilter, setAvailabilityFilter] = useState<"available" | "all">("available");
-  const [dietaryFilter, setDietaryFilter] = useState<"ALL" | "veg" | "non-veg" | "egg">("ALL");
+  const [dietaryFilter, setDietaryFilter] = useState<"ALL" | "veg" | "non-veg" | "egg" | "beverage" | "dessert">("ALL");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -724,36 +734,70 @@ export default function StorefrontClient({
     }
   };
 
-  /*
-   * FILTERED PRODUCTS
-   */
-  const filteredProducts = products.filter((product) => {
-    if (availabilityFilter === "available" && !product.is_available) {
+ /*
+ * FILTERED PRODUCTS
+ */
+const filteredProducts = products.filter((product) => {
+  // 1. Availability filter
+  if (availabilityFilter === "available" && !product.is_available) {
+    return false;
+  }
+
+  // 2. Search filter
+  const searchValue = search.trim().toLowerCase();
+
+  if (searchValue) {
+    const matchesSearch =
+      product.name.toLowerCase().includes(searchValue) ||
+      (product.description || "").toLowerCase().includes(searchValue);
+
+    if (!matchesSearch) return false;
+  }
+
+  // 3. Preserve the selected category
+  if (
+    selectedCategory !== null &&
+    product.category_id !== selectedCategory
+  ) {
+    return false;
+  }
+
+  // 4. Get the actual product category
+  const category = categories.find(
+    (cat) => cat.id === product.category_id
+  );
+
+  const categoryName = String(category?.name || "")
+    .toLowerCase()
+    .trim();
+
+  // 5. Beverage filter
+  if (dietaryFilter === "beverage") {
+    return (
+      categoryName.includes("beverage") ||
+      categoryName.includes("drink")
+    );
+  }
+
+  // 6. Dessert filter
+  if (dietaryFilter === "dessert") {
+    return (
+      categoryName.includes("dessert") ||
+      categoryName.includes("sweet")
+    );
+  }
+
+  // 7. Veg / Non-Veg / Egg filters
+  if (dietaryFilter !== "ALL") {
+    const type = getDietaryType(product, categories);
+
+    if (type !== dietaryFilter) {
       return false;
     }
+  }
 
-    const searchValue = search.trim().toLowerCase();
-
-    if (searchValue) {
-      const matchesSearch =
-        product.name.toLowerCase().includes(searchValue) ||
-        product.description?.toLowerCase().includes(searchValue);
-      return matchesSearch;
-    }
-
-    if (selectedCategory !== null && product.category_id !== selectedCategory) {
-      return false;
-    }
-
-    if (dietaryFilter !== "ALL") {
-      const type = getDietaryType(product, categories);
-      if (type !== dietaryFilter) {
-        return false;
-      }
-    }
-
-    return true;
-  });
+  return true;
+});
 
   // Only show categories that have at least one product
   const categoriesWithProducts = categories.filter(
@@ -835,7 +879,21 @@ export default function StorefrontClient({
         <div className="w-full px-4 sm:px-6 md:px-8 py-3 flex items-center justify-between gap-3 sm:gap-6 flex-wrap md:flex-nowrap">
           {/* LEFT: Restaurant Brand & Location */}
           <div className="flex items-center gap-3 shrink-0">
-            <div className="w-11 h-11 rounded-lg border border-gray-200/90 bg-white p-1 flex items-center justify-center shadow-xs overflow-hidden shrink-0">
+            
+
+  {/* Temporary restaurant logo image */}
+  <div className="relative w-[145px] h-[52px] shrink-0">
+    <Image
+      src="/images/nawabi-logo.png"
+      alt="Nawabi Hyderabad House - Novi Michigan"
+      fill
+      className="object-contain object-left"
+      priority
+    />
+  </div>
+            {/* Original logo and restaurant details temporarily commented out */}
+
+            {/*<div className="w-11 h-11 rounded-lg border border-gray-200/90 bg-white p-1 flex items-center justify-center shadow-xs overflow-hidden shrink-0">
               <div className="w-full h-full rounded bg-emerald-50 flex flex-col items-center justify-center text-center p-0.5 border border-emerald-100">
                 <span className="text-[9px] font-black uppercase text-[#155e38] leading-tight">
                   {restaurant.name.slice(0, 3)}
@@ -853,7 +911,7 @@ export default function StorefrontClient({
               <div className="text-xs text-gray-500 font-medium leading-tight mt-0.5">
                 {restaurant.address || restaurant.cuisine || "Dine-In & Takeaway"}
               </div>
-            </div>
+            </div>*/}
 
             <div className="hidden sm:block h-8 w-[1px] bg-gray-200 ml-2" />
           </div>
@@ -1069,12 +1127,12 @@ export default function StorefrontClient({
               Available Now
             </button>
             <button
-              onClick={() => {
-                setSelectedCategory(null);
-                setAvailabilityFilter("all");
-                setDietaryFilter("ALL");
-                setSearch("");
-              }}
+             onClick={() => {
+  setSelectedCategory(null);
+  setAvailabilityFilter("all");
+  setDietaryFilter("ALL");
+  setSearch("");
+}}
               className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer ${selectedCategory === null && availabilityFilter === "all" && dietaryFilter === "ALL"
                   ? "bg-[#155e38] text-white shadow-xs"
                   : "text-gray-700 hover:text-gray-900"
@@ -1084,50 +1142,112 @@ export default function StorefrontClient({
             </button>
           </div>
 
-          {/* DIETARY CATEGORY PILLS (Veg, Non-Veg, Egg) */}
-          <div className="flex items-center gap-1.5 shrink-0 overflow-x-auto [scrollbar-width:none]">
-            {/* VEG */}
-            <button
-              onClick={() =>
-                setDietaryFilter((prev) => (prev === "veg" ? "ALL" : "veg"))
-              }
-              className={`px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${dietaryFilter === "veg"
-                  ? "bg-[#16a34a] text-white border-[#16a34a] shadow-xs"
-                  : "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-50/50 shadow-2xs"
-                }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${dietaryFilter === "veg" ? "bg-white" : "bg-[#16a34a]"}`} />
-              Veg
-            </button>
+         {/* Dietary Filters */}
+<div className="flex items-center gap-1.5 shrink-0 overflow-x-auto [scrollbar-width:none]">
 
-            {/* NON-VEG */}
-            <button
-              onClick={() =>
-                setDietaryFilter((prev) => (prev === "non-veg" ? "ALL" : "non-veg"))
-              }
-              className={`px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${dietaryFilter === "non-veg"
-                  ? "bg-[#ef4444] text-white border-[#ef4444] shadow-xs"
-                  : "bg-white text-red-800 border-red-300 hover:bg-red-50/50 shadow-2xs"
-                }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${dietaryFilter === "non-veg" ? "bg-white" : "bg-[#ef4444]"}`} />
-              Non-Veg
-            </button>
+  {/* MOBILE VERSION */}
+ <div className="flex sm:hidden items-center gap-4 overflow-x-auto whitespace-nowrap [scrollbar-width:none]">
+  {[
+    { label: "All", value: "ALL", color: "#EF4444" },
+    { label: "Veg", value: "veg", color: "#22C55E" },
+    { label: "Non-Veg", value: "non-veg", color: "#EF4444" },
+    { label: "Egg", value: "egg", color: "#CA8A04" },
+    { label: "Beverage", value: "beverage", color: "#808080" },
+    { label: "Dessert", value: "dessert", color: "#FACC15" },
+  ].map((item) => {
+    const isActive = dietaryFilter === item.value;
 
-            {/* EGG (YELLOW) */}
-            <button
-              onClick={() =>
-                setDietaryFilter((prev) => (prev === "egg" ? "ALL" : "egg"))
-              }
-              className={`px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${dietaryFilter === "egg"
-                  ? "bg-[#eab308] text-gray-950 border-[#ca8a04] shadow-xs font-black"
-                  : "bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100/60 shadow-2xs"
-                }`}
-            >
-              <span className={`w-2 h-2 rounded-full ${dietaryFilter === "egg" ? "bg-gray-900" : "bg-[#eab308]"}`} />
-              Egg
-            </button>
-          </div>
+    return (
+      <button
+        key={item.value}
+        onClick={() =>
+          setDietaryFilter(
+            item.value as
+              | "ALL"
+              | "veg"
+              | "non-veg"
+              | "egg"
+              | "beverage"
+              | "dessert"
+          )
+        }
+        className="relative shrink-0 pb-2 text-base font-medium"
+      >
+        {item.label}
+
+        {isActive && (
+          <span
+            className="absolute bottom-0 left-0 h-[2px] w-full rounded-full"
+            style={{ backgroundColor: item.color }}
+          />
+        )}
+      </button>
+    );
+  })}
+</div>
+
+  {/* DESKTOP VERSION — ORIGINAL DESIGN UNCHANGED */}
+  <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+
+    {/* VEG */}
+    <button
+      onClick={() =>
+        setDietaryFilter((prev) => (prev === "veg" ? "ALL" : "veg"))
+      }
+      className={`px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${
+        dietaryFilter === "veg"
+          ? "bg-[#16a34a] text-white border-[#16a34a] shadow-xs"
+          : "bg-white text-emerald-800 border-emerald-300 hover:bg-emerald-50/50 shadow-2xs"
+      }`}
+    >
+      <span
+        className={`w-2 h-2 rounded-full ${
+          dietaryFilter === "veg" ? "bg-white" : "bg-[#16a34a]"
+        }`}
+      />
+      Veg
+    </button>
+
+    {/* NON-VEG */}
+    <button
+      onClick={() =>
+        setDietaryFilter((prev) => (prev === "non-veg" ? "ALL" : "non-veg"))
+      }
+      className={`px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${
+        dietaryFilter === "non-veg"
+          ? "bg-[#ef4444] text-white border-[#ef4444] shadow-xs"
+          : "bg-white text-red-800 border-red-300 hover:bg-red-50/50 shadow-2xs"
+      }`}
+    >
+      <span
+        className={`w-2 h-2 rounded-full ${
+          dietaryFilter === "non-veg" ? "bg-white" : "bg-[#ef4444]"
+        }`}
+      />
+      Non-Veg
+    </button>
+
+    {/* EGG */}
+    <button
+      onClick={() =>
+        setDietaryFilter((prev) => (prev === "egg" ? "ALL" : "egg"))
+      }
+      className={`px-3 py-1.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border ${
+        dietaryFilter === "egg"
+          ? "bg-[#eab308] text-gray-950 border-[#ca8a04] shadow-xs font-black"
+          : "bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100/60 shadow-2xs"
+      }`}
+    >
+      <span
+        className={`w-2 h-2 rounded-full ${
+          dietaryFilter === "egg" ? "bg-gray-900" : "bg-[#eab308]"
+        }`}
+      />
+      Egg
+    </button>
+
+  </div>
+</div>
         </div>
 
         {/* PROMOTIONS / SPECIAL OFFERS BANNER */}
@@ -1446,6 +1566,7 @@ export default function StorefrontClient({
             {filteredProducts.map((product) => {
               const meta = parseProductMetadata(product.description, product.is_vegetarian);
               const dietaryType = getDietaryType(product, categories);
+              
 
               const topBorderColor =
                 dietaryType === "veg"
@@ -1488,9 +1609,7 @@ export default function StorefrontClient({
                     <div>
                       {/* Dietary Badge & Dish Title */}
                       <div className="flex items-start gap-1">
-                        <span className="mt-0.5 shrink-0">
-                          <DietaryBadge type={dietaryType} />
-                        </span>
+                        
                         <h3 className="font-extrabold text-[13px] sm:text-[16px] text-gray-900 leading-snug line-clamp-2 min-h-[34px] sm:min-h-[42px] group-hover:text-emerald-700 transition-colors">
                           {product.name}
                         </h3>
@@ -1504,15 +1623,23 @@ export default function StorefrontClient({
                           </span>
                         )}
                         {meta.spiceLevel && (
-                          <span className="text-[9px] sm:text-[10px] font-semibold text-red-700 bg-red-50 border border-red-100 px-1.5 py-0.5 rounded-full">
-                            🌶 {meta.spiceLevel}
-                          </span>
-                        )}
-                        {meta.allergens && (
-                          <span className="text-[9px] sm:text-[10px] font-semibold text-orange-700 bg-orange-50 border border-orange-100 px-1.5 py-0.5 rounded-full">
-                            ⚠️ {meta.allergens}
-                          </span>
-                        )}
+  <span
+    className={`text-[9px] sm:text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+      meta.spiceLevel.toLowerCase() === "extra"
+        ? "text-red-700 bg-gradient-to-r from-red-50/90 to-red-100/70 border border-red-200/80"
+        : meta.spiceLevel.toLowerCase() === "hot"
+        ? "text-orange-700 bg-gradient-to-r from-orange-50/90 to-orange-100/70 border border-orange-200/80"
+        : meta.spiceLevel.toLowerCase() === "medium"
+        ? "text-yellow-700 bg-gradient-to-r from-yellow-50/90 to-yellow-100/70 border border-yellow-200/80"
+        : meta.spiceLevel.toLowerCase() === "mild"
+        ? "text-green-700 bg-gradient-to-r from-green-50/90 to-green-100/70 border border-green-200/80"
+        : "text-red-700 bg-red-50 border border-red-100"
+    }`}
+  >
+    {meta.spiceLevel}
+  </span>
+)}
+                        
                       </div>
 
                       {/* Nutrition tags */}
@@ -1530,7 +1657,7 @@ export default function StorefrontClient({
                     {/* Bottom Row: Price & Red Plus Button */}
                     <div className="flex items-center justify-between mt-2 sm:mt-3 pt-1">
                       <div className="text-[15px] sm:text-[19px] font-black text-gray-900 tracking-tight">
-                        {getCurrencySymbol()}{Number(product.price || 0).toFixed(0)}
+                        {getCurrencySymbol()}{Number(product.price || 0).toFixed(2)}
                       </div>
 
                       <button
@@ -1591,11 +1718,11 @@ export default function StorefrontClient({
                     )}
                     <div className="flex items-center justify-between mt-3">
                       <span className="font-extrabold text-base text-gray-900">
-                        {getCurrencySymbol()}{Number(combo.combo_price).toFixed(0)}
+                        {getCurrencySymbol()}{Number(combo.combo_price).toFixed(2)}
                       </span>
                       {combo.original_price > combo.combo_price && (
                         <span className="text-xs text-gray-400 line-through">
-                          {getCurrencySymbol()}{Number(combo.original_price).toFixed(0)}
+                          {getCurrencySymbol()}{Number(combo.original_price).toFixed(2)}
                         </span>
                       )}
                     </div>
@@ -1649,9 +1776,7 @@ export default function StorefrontClient({
               {/* Dish Details */}
               <div>
                 <div className="flex items-center justify-center gap-1.5">
-                  <DietaryBadge
-                    type={getDietaryType(selectedProductForModal, categories)}
-                  />
+                  
                   <h3 className="text-xl sm:text-2xl font-black text-gray-900 leading-tight">
                     {selectedProductForModal.name}
                   </h3>
@@ -1676,15 +1801,28 @@ export default function StorefrontClient({
                           </span>
                         )}
                         {meta.spiceLevel && (
-                          <span className="text-[10px] font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
-                            🌶 {meta.spiceLevel}
-                          </span>
-                        )}
+  <span
+    className={`text-[9px] sm:text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+      meta.spiceLevel.toLowerCase() === "extra"
+        ? "text-red-700 bg-gradient-to-r from-red-50/90 to-red-100/70 border border-red-200/80"
+        : meta.spiceLevel.toLowerCase() === "hot"
+        ? "text-orange-700 bg-gradient-to-r from-orange-50/90 to-orange-100/70 border border-orange-200/80"
+        : meta.spiceLevel.toLowerCase() === "medium"
+        ? "text-yellow-700 bg-gradient-to-r from-yellow-50/90 to-yellow-100/70 border border-yellow-200/80"
+        : meta.spiceLevel.toLowerCase() === "mild"
+        ? "text-green-700 bg-gradient-to-r from-green-50/90 to-green-100/70 border border-green-200/80"
+        : "text-red-700 bg-red-50 border border-red-100"
+    }`}
+  >
+    {meta.spiceLevel}
+  </span>
+)}
+{/* Nutrition tags in modal */} {/*}
                         {meta.allergens && (
                           <span className="text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full">
                             ⚠️ Contains: {meta.allergens}
                           </span>
-                        )}
+                        )} */}
                       </div>
                       {meta.nutritionTags.length > 0 && (
                         <div className="flex flex-wrap items-center justify-center gap-1 mt-1.5">
@@ -2112,18 +2250,6 @@ export default function StorefrontClient({
                           +
                         </button>
                       </div>
-
-                      {/* Remove Button */}
-                      <button
-                        onClick={() => {
-                          removeCartItem(restaurantSlug, item.key);
-                          refreshCartState();
-                        }}
-                        className="text-gray-400 hover:text-red-500 p-1 text-xs cursor-pointer transition-colors"
-                        title="Remove item"
-                      >
-                        🗑️
-                      </button>
                     </div>
                   ))
                 )}
