@@ -460,6 +460,7 @@ export default function CheckoutClient({
   if (items.length === 0) {
     return (
       <main
+        className="checkout-page"
         style={{
           minHeight: "100vh",
           display: "flex",
@@ -526,6 +527,7 @@ export default function CheckoutClient({
         }}
       >
         <div
+          className="checkout-header-inner"
           style={{
             maxWidth: "1100px",
             margin: "0 auto",
@@ -573,6 +575,7 @@ export default function CheckoutClient({
       </header>
 
       <div
+        className="checkout-content"
         style={{
           maxWidth: "1100px",
           margin: "0 auto",
@@ -584,10 +587,13 @@ export default function CheckoutClient({
         }}
       >
         <form
+          className="checkout-form"
+          id="checkout-form"
           onSubmit={handleSubmit}
           style={{ display: "grid", gap: "16px", minWidth: 0 }}
         >
           <section
+            className="checkout-section"
             style={{
               background: "#fff",
               border: "1px solid #eaecf0",
@@ -639,6 +645,7 @@ export default function CheckoutClient({
           </section>
 
           <section
+            className="checkout-section"
             style={{
               background: "#fff",
               border: "1px solid #eaecf0",
@@ -688,28 +695,10 @@ export default function CheckoutClient({
             </p>
           )}
 
-          <button
-            type="submit"
-            disabled={submitting}
-            style={{
-              border: "none",
-              background: "#202228",
-              color: "#fff",
-              padding: "14px",
-              borderRadius: "8px",
-              cursor: submitting ? "not-allowed" : "pointer",
-              fontSize: "12px",
-              fontWeight: "600",
-              opacity: submitting ? 0.7 : 1,
-            }}
-          >
-            {submitting
-              ? "Placing order..."
-              : `Place Order · ${formatCurrency(total)}`}
-          </button>
         </form>
 
         <aside
+          className="checkout-summary"
           style={{
             background: "#fff",
             border: "1px solid #eaecf0",
@@ -763,6 +752,7 @@ export default function CheckoutClient({
           </div>
 
           <div
+            className="checkout-coupon"
             style={{
               display: "flex",
               gap: "8px",
@@ -825,6 +815,29 @@ export default function CheckoutClient({
             <span>Total</span>
             <span>{formatCurrency(total)}</span>
           </div>
+
+          <button
+            type="submit"
+            form="checkout-form"
+            disabled={submitting}
+            style={{
+              width: "100%",
+              marginTop: "16px",
+              border: "none",
+              background: "#202228",
+              color: "#fff",
+              padding: "14px",
+              borderRadius: "8px",
+              cursor: submitting ? "not-allowed" : "pointer",
+              fontSize: "12px",
+              fontWeight: "600",
+              opacity: submitting ? 0.7 : 1,
+            }}
+          >
+            {submitting
+              ? "Placing order..."
+              : `Place Order · ${formatCurrency(total)}`}
+          </button>
         </aside>
       </div>
     </main>

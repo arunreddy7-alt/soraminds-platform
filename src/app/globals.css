@@ -21,3 +21,55 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+@media (max-width: 700px) {
+  .checkout-page {
+    overflow-x: hidden;
+  }
+
+  .checkout-header-inner {
+    gap: 10px !important;
+  }
+
+  .checkout-content {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 14px !important;
+    padding: 18px 12px 32px !important;
+  }
+
+  .checkout-section,
+  .checkout-summary {
+    padding: 16px !important;
+  }
+
+  .checkout-summary {
+    position: static !important;
+  }
+
+  .checkout-coupon {
+    align-items: stretch !important;
+  }
+
+  .checkout-coupon button {
+    flex: 0 0 auto;
+  }
+}
+
+@media (max-width: 420px) {
+  .checkout-header-inner {
+    align-items: flex-start !important;
+  }
+
+  .checkout-header-inner h1 {
+    font-size: 16px !important;
+  }
+
+  .checkout-coupon {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .checkout-coupon input {
+    width: 100%;
+  }
+}
